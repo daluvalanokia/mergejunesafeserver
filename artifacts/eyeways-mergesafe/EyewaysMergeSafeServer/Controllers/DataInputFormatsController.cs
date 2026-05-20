@@ -54,6 +54,7 @@ public class DataInputFormatsController : Controller
                              "highway_id","signal_strength","altitude_ft" };
         var payload = _payloadSvc.Generate(type, fields);
         var label   = $"Simulation [{type.ToUpper()}] — {DateTime.UtcNow:HH:mm:ss}";
+        var now     = DateTime.UtcNow;
 
         _db.SamplePayloads.Add(new SamplePayload
         {
@@ -61,8 +62,40 @@ public class DataInputFormatsController : Controller
             Label       = label,
             Payload     = payload,
             IsValid     = true,
-            CreatedDate = DateTime.UtcNow
+            CreatedDate = now
         });
+
+        // ── Also write a VehicleEvent so the 3D scene live feed picks it up ──
+        try
+        {
+            using var doc  = System.Text.Json.JsonDocument.Parse(payload);
+            var root       = doc.RootElement;
+            string GetStr(string k) => root.TryGetProperty(k, out var v) ? (v.GetString() ?? "") : "";
+            double? GetDbl(string k) => root.TryGetProperty(k, out var v) &&
+                                        v.ValueKind == System.Text.Json.JsonValueKind.Number
+                                        ? v.GetDouble() : null;
+
+            var hw  = !string.IsNullOrEmpty(highwayId) ? highwayId : GetStr("highway_id");
+            var zid = !string.IsNullOrEmpty(zoneId)    ? zoneId    : GetStr("zone_id");
+
+            // Truncate payload to fit [MaxLength(500)]
+            var shortPayload = payload.Length > 490 ? payload[..490] : payload;
+
+            _db.VehicleEvents.Add(new VehicleEvent
+            {
+                EventType   = GetStr("event_type") is { Length: > 0 } et ? et : "detection",
+                ZoneId      = zid,
+                HighwayId   = hw,
+                VehicleId   = GetStr("vehicle_id"),
+                SpeedMph    = GetDbl("speed_mph"),
+                Latitude    = GetDbl("latitude"),
+                Longitude   = GetDbl("longitude"),
+                Payload     = shortPayload,
+                CreatedDate = now
+            });
+        }
+        catch { /* non-fatal: log to 3D scene is best-effort */ }
+
         await _db.SaveChangesAsync();
         return Json(new { ok = true, label, payload });
     }

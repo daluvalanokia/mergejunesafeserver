@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("EyewaysMergeSafeServer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+147d9bcc42b07e3e5140a23366eb0a61510976da")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8d485934907df654661fc7d8a8e3f906b60a3698")]
 [assembly: System.Reflection.AssemblyProductAttribute("EyewaysMergeSafeServer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("EyewaysMergeSafeServer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

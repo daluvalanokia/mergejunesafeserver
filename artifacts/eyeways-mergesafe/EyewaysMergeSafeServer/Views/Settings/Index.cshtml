@@ -32,6 +32,61 @@
     </div>
 </div>
 
+<div class="mss-card mb-4">
+    <div class="mss-card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-trash3 me-1"></i> Traffic Data Purge Policy</span>
+        @if (TempData["PurgeSaved"] != null)
+        { <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Saved</span> }
+    </div>
+    <div class="mss-card-body">
+        <p class="text-muted small mb-3">
+            Automatically removes old <strong>Vehicle Events</strong> records.
+            Both rules run on every purge — records are deleted when they violate
+            <em>either</em> the age limit <em>or</em> the count cap, whichever
+            retains fewer records wins.
+        </p>
+
+        <form method="post" asp-action="SavePurgeSettings" class="row g-3 mb-3">
+            @Html.AntiForgeryToken()
+            <div class="col-sm-5">
+                <label class="form-label small fw-semibold">Maximum age (days)</label>
+                <div class="input-group input-group-sm">
+                    <input type="number" name="purgeMaxDays" class="form-control font-monospace"
+                           min="1" max="3650" value="@Model.PurgeMaxDays" />
+                    <span class="input-group-text text-muted">days</span>
+                </div>
+                <div class="form-text text-muted" style="font-size:.68rem">
+                    Records older than this are deleted on purge.
+                </div>
+            </div>
+            <div class="col-sm-5">
+                <label class="form-label small fw-semibold">Maximum record count</label>
+                <div class="input-group input-group-sm">
+                    <input type="number" name="purgeMaxCount" class="form-control font-monospace"
+                           min="100" max="5000000" value="@Model.PurgeMaxCount" />
+                    <span class="input-group-text text-muted">records</span>
+                </div>
+                <div class="form-text text-muted" style="font-size:.68rem">
+                    If total exceeds this, oldest records are removed first.
+                </div>
+            </div>
+            <div class="col-sm-2 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary btn-sm w-100">
+                    <i class="bi bi-save me-1"></i>Save
+                </button>
+            </div>
+        </form>
+
+        <div class="d-flex align-items-center gap-3 flex-wrap">
+            <form id="purgeForm" style="display:none">@Html.AntiForgeryToken()</form>
+            <button class="btn btn-outline-danger btn-sm" onclick="runPurge(this)">
+                <i class="bi bi-lightning me-1"></i>Run Purge Now
+            </button>
+            <span id="purgeResult" class="small text-muted"></span>
+        </div>
+    </div>
+</div>
+
 <div class="mss-card">
     <div class="mss-card-header"><i class="bi bi-sign-intersection me-1"></i> Highways</div>
     <div class="table-responsive">
@@ -124,6 +179,41 @@ function toggleTomKey() {
     var ic = document.getElementById('tomkeyIcon');
     if (i.type==='password'){i.type='text';ic.className='bi bi-eye-slash';}
     else{i.type='password';ic.className='bi bi-eye';}
+}
+
+function runPurge(btn) {
+    if (!confirm('Run purge now? This will permanently delete matching Vehicle Event records.')) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Purging…';
+    var tok = document.querySelector('#purgeForm input[name="__RequestVerificationToken"]').value;
+    fetch('/Settings/RunPurge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: '__RequestVerificationToken=' + encodeURIComponent(tok)
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-lightning me-1"></i>Run Purge Now';
+        if (d.ok) {
+            var res = document.getElementById('purgeResult');
+            if (d.totalDeleted === 0) {
+                res.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Nothing to purge — ' + d.remaining + ' records within policy.</span>';
+            } else {
+                res.innerHTML = '<span class="text-warning"><i class="bi bi-trash me-1"></i>' +
+                    'Deleted <strong>' + d.totalDeleted + '</strong> record(s) ' +
+                    '(' + d.deletedByAge + ' by age &gt;' + d.maxDays + 'd, ' +
+                    d.deletedByCount + ' by count cap ' + d.maxCount.toLocaleString() + '). ' +
+                    '<strong>' + d.remaining + '</strong> records remain.</span>';
+            }
+        }
+    })
+    .catch(function(e){
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-lightning me-1"></i>Run Purge Now';
+        console.error(e);
+        document.getElementById('purgeResult').textContent = 'Purge failed — see console.';
+    });
 }
 </script>
 }
