@@ -210,10 +210,29 @@ namespace EyewaysMergeSafeServer.Migrations
             migrationBuilder.CreateIndex(name: "IX_VehicleEvents_CreatedDate",table: "VehicleEvents",       column: "CreatedDate");
             migrationBuilder.CreateIndex(name: "IX_InputFormatConfigs_SourceType", table: "InputFormatConfigs", column: "SourceType");
             migrationBuilder.CreateIndex(name: "IX_UserProfiles_HighwayId",   table: "UserProfiles",        column: "HighwayId");
+
+            // Composite indexes (HighwayId + ZoneId)
+            migrationBuilder.CreateIndex(
+                name:    "IX_SwitchServers_HighwayId_ZoneId",
+                table:   "SwitchServers",
+                columns: new[] { "HighwayId", "ZoneId" });
+            migrationBuilder.CreateIndex(
+                name:    "IX_SensorDevices_HighwayId_ZoneId",
+                table:   "SensorDevices",
+                columns: new[] { "HighwayId", "ZoneId" });
+            migrationBuilder.CreateIndex(
+                name:    "IX_VehicleEvents_HighwayId_ZoneId",
+                table:   "VehicleEvents",
+                columns: new[] { "HighwayId", "ZoneId" });
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // Drop composite indexes first
+            migrationBuilder.DropIndex(name: "IX_SwitchServers_HighwayId_ZoneId",  table: "SwitchServers");
+            migrationBuilder.DropIndex(name: "IX_SensorDevices_HighwayId_ZoneId",  table: "SensorDevices");
+            migrationBuilder.DropIndex(name: "IX_VehicleEvents_HighwayId_ZoneId",  table: "VehicleEvents");
+
             migrationBuilder.DropTable(name: "Highways");
             migrationBuilder.DropTable(name: "MergeZones");
             migrationBuilder.DropTable(name: "SwitchServers");

@@ -11,6 +11,8 @@ public class MergeZonesController : Controller
     private readonly AppDbContext _db;
     public MergeZonesController(AppDbContext db) { _db = db; }
 
+    private bool IsAjax => Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
     public async Task<IActionResult> Index(string? highwayId)
     {
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
@@ -30,6 +32,7 @@ public class MergeZonesController : Controller
     {
         _db.MergeZones.Add(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
@@ -38,6 +41,7 @@ public class MergeZonesController : Controller
     {
         _db.MergeZones.Update(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
@@ -46,6 +50,7 @@ public class MergeZonesController : Controller
     {
         var z = await _db.MergeZones.FindAsync(id);
         if (z != null) { _db.MergeZones.Remove(z); await _db.SaveChangesAsync(); }
+        if (IsAjax) return Json(new { ok = true });
         return RedirectToAction(nameof(Index), new { highwayId });
     }
 }

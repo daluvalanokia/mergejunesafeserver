@@ -16,6 +16,8 @@ public class DataInputFormatsController : Controller
     public DataInputFormatsController(AppDbContext db, InputPayloadService payloadSvc)
     { _db = db; _payloadSvc = payloadSvc; }
 
+    private bool IsAjax => Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
     public async Task<IActionResult> Index(string activeTab = "physical")
     {
         var highways   = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
@@ -44,6 +46,7 @@ public class DataInputFormatsController : Controller
         model.EnabledFieldsRaw = string.Join(",", combined);
         _db.InputFormatConfigs.Add(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, activeTab = model.SourceType });
         return RedirectToAction(nameof(Index), new { activeTab = model.SourceType });
     }
 
@@ -55,6 +58,7 @@ public class DataInputFormatsController : Controller
         model.EnabledFieldsRaw = string.Join(",", combined);
         _db.InputFormatConfigs.Update(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, activeTab = model.SourceType });
         return RedirectToAction(nameof(Index), new { activeTab = model.SourceType });
     }
 
@@ -63,6 +67,7 @@ public class DataInputFormatsController : Controller
     {
         var c = await _db.InputFormatConfigs.FindAsync(id);
         if (c != null) { _db.InputFormatConfigs.Remove(c); await _db.SaveChangesAsync(); }
+        if (IsAjax) return Json(new { ok = true });
         return RedirectToAction(nameof(Index), new { activeTab });
     }
 
@@ -115,11 +120,42 @@ public class DataInputFormatsController : Controller
         return Json(new { ok = true, label, payload });
     }
 
+    /// <summary>
+    /// Cross-tab duplicate: copy a config into a different source type tab.
+    /// Returns JSON { ok, targetTab, configId, name }.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> DuplicateConfig(int id, string targetTab)
+    {
+        var original = await _db.InputFormatConfigs.FindAsync(id);
+        if (original == null) return Json(new { ok = false, error = "Config not found" });
+
+        var validTabs = new[] { "physical", "satellite", "telecom", "tracker" };
+        if (!validTabs.Contains(targetTab))
+            return Json(new { ok = false, error = "Invalid target tab" });
+
+        var copy = new InputFormatConfig
+        {
+            FormatName       = original.FormatName + " (copy)",
+            SourceId         = original.SourceId + "-" + targetTab,
+            SourceType       = targetTab,
+            InputSource      = original.InputSource,
+            Description      = original.Description,
+            EnabledFieldsRaw = original.EnabledFieldsRaw,
+            CreatedDate      = DateTime.UtcNow
+        };
+        _db.InputFormatConfigs.Add(copy);
+        await _db.SaveChangesAsync();
+
+        return Json(new { ok = true, targetTab, configId = copy.Id, name = copy.FormatName });
+    }
+
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> DeletePayload(int id, string? activeTab)
     {
         var p = await _db.SamplePayloads.FindAsync(id);
         if (p != null) { _db.SamplePayloads.Remove(p); await _db.SaveChangesAsync(); }
+        if (IsAjax) return Json(new { ok = true });
         return RedirectToAction(nameof(Index), new { activeTab });
     }
 }

@@ -1,6 +1,7 @@
 using EyewaysMergeSafeServer.Data;
 using EyewaysMergeSafeServer.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 
 namespace EyewaysMergeSafeServer.Controllers;
@@ -12,7 +13,9 @@ public class ApiController : ControllerBase
     private readonly AppDbContext _db;
     public ApiController(AppDbContext db) { _db = db; }
 
-    [HttpGet("stats")]
+    // ── Read endpoints (GET — public, no auth required) ────────────────────
+
+    [HttpGet("stats"), OutputCache(PolicyName = "ShortLive")]
     public async Task<IActionResult> Stats(string? highwayId)
     {
         var zones   = await _db.MergeZones.AsNoTracking().Where(z => highwayId == null || z.HighwayId == highwayId).CountAsync();
@@ -20,37 +23,6 @@ public class ApiController : ControllerBase
         var sensors = await _db.SensorDevices.AsNoTracking().Where(d => highwayId == null || d.HighwayId == highwayId).CountAsync();
         var events  = await _db.VehicleEvents.AsNoTracking().Where(e => highwayId == null || e.HighwayId == highwayId).CountAsync();
         return Ok(new { zones, servers, sensors, events, timestamp = DateTime.UtcNow });
-    }
-
-    [HttpPost("events/ingest")]
-    public async Task<IActionResult> IngestEvent([FromBody] VehicleEvent ev)
-    {
-        ev.CreatedDate = DateTime.UtcNow;
-        _db.VehicleEvents.Add(ev);
-        await _db.SaveChangesAsync();
-        return Ok(new { id = ev.Id, status = "accepted" });
-    }
-
-    [HttpPost("sensor/{deviceId}/heartbeat")]
-    public async Task<IActionResult> SensorHeartbeat(string deviceId)
-    {
-        var sensor = await _db.SensorDevices.FirstOrDefaultAsync(d => d.DeviceId == deviceId);
-        if (sensor == null) return NotFound();
-        sensor.LastHeartbeat = DateTime.UtcNow;
-        sensor.Status = "online";
-        await _db.SaveChangesAsync();
-        return Ok(new { deviceId, status = "online", timestamp = DateTime.UtcNow });
-    }
-
-    [HttpPost("server/{serverId}/heartbeat")]
-    public async Task<IActionResult> ServerHeartbeat(string serverId)
-    {
-        var server = await _db.SwitchServers.FirstOrDefaultAsync(s => s.ServerId == serverId);
-        if (server == null) return NotFound();
-        server.LastHeartbeat = DateTime.UtcNow;
-        server.Status = "online";
-        await _db.SaveChangesAsync();
-        return Ok(new { serverId, status = "online", timestamp = DateTime.UtcNow });
     }
 
     [HttpGet("zone/{zoneId}/status")]
@@ -64,9 +36,52 @@ public class ApiController : ControllerBase
         {
             zoneId,
             zoneName = zone.ZoneName,
-            status = zone.Status,
-            sensors = sensors.Select(s => new { s.DeviceId, s.DeviceName, s.Status }),
-            servers = servers.Select(s => new { s.ServerId, s.ServerName, s.Status })
+            status   = zone.Status,
+            sensors  = sensors.Select(s => new { s.DeviceId, s.DeviceName, s.Status }),
+            servers  = servers.Select(s => new { s.ServerId, s.ServerName, s.Status })
         });
+    }
+
+    // ── Write endpoints (POST — require session OR X-Device-Token) ──────────
+    // Auth is enforced by SessionAuthFilter; 401 is returned for unauthenticated POST /api/*.
+
+    /// <summary>
+    /// Ingest a vehicle event. Requires valid session or X-Device-Token header.
+    /// </summary>
+    [HttpPost("events/ingest")]
+    public async Task<IActionResult> IngestEvent([FromBody] VehicleEvent ev)
+    {
+        ev.CreatedDate = DateTime.UtcNow;
+        _db.VehicleEvents.Add(ev);
+        await _db.SaveChangesAsync();
+        return Ok(new { id = ev.Id, status = "accepted", timestamp = ev.CreatedDate });
+    }
+
+    /// <summary>
+    /// Sensor device heartbeat. Requires valid session or X-Device-Token header.
+    /// </summary>
+    [HttpPost("sensor/{deviceId}/heartbeat")]
+    public async Task<IActionResult> SensorHeartbeat(string deviceId)
+    {
+        var sensor = await _db.SensorDevices.FirstOrDefaultAsync(d => d.DeviceId == deviceId);
+        if (sensor == null) return NotFound(new { deviceId, error = "device not found" });
+        sensor.LastHeartbeat = DateTime.UtcNow;
+        sensor.Status = "online";
+        await _db.SaveChangesAsync();
+        return Ok(new { deviceId, status = "online", timestamp = DateTime.UtcNow });
+    }
+
+    /// <summary>
+    /// Switch server heartbeat. Requires valid session or X-Device-Token header.
+    /// </summary>
+    [HttpPost("server/{serverId}/heartbeat")]
+    public async Task<IActionResult> ServerHeartbeat(string serverId)
+    {
+        var server = await _db.SwitchServers.FirstOrDefaultAsync(s => s.ServerId == serverId);
+        if (server == null) return NotFound(new { serverId, error = "server not found" });
+        server.LastHeartbeat = DateTime.UtcNow;
+        server.Status = "online";
+        await _db.SaveChangesAsync();
+        return Ok(new { serverId, status = "online", timestamp = DateTime.UtcNow });
     }
 }

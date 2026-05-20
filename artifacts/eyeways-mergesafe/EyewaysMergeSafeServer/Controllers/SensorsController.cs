@@ -11,6 +11,8 @@ public class SensorsController : Controller
     private readonly AppDbContext _db;
     public SensorsController(AppDbContext db) { _db = db; }
 
+    private bool IsAjax => Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
     public async Task<IActionResult> Index(string? highwayId, string filterType = "all")
     {
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
@@ -29,6 +31,7 @@ public class SensorsController : Controller
     {
         _db.SensorDevices.Add(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
@@ -37,6 +40,7 @@ public class SensorsController : Controller
     {
         _db.SensorDevices.Update(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
@@ -45,6 +49,7 @@ public class SensorsController : Controller
     {
         var d = await _db.SensorDevices.FindAsync(id);
         if (d != null) { _db.SensorDevices.Remove(d); await _db.SaveChangesAsync(); }
+        if (IsAjax) return Json(new { ok = true });
         return RedirectToAction(nameof(Index), new { highwayId });
     }
 }

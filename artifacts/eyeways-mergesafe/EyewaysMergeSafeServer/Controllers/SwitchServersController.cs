@@ -11,6 +11,8 @@ public class SwitchServersController : Controller
     private readonly AppDbContext _db;
     public SwitchServersController(AppDbContext db) { _db = db; }
 
+    private bool IsAjax => Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
     public async Task<IActionResult> Index(string? highwayId)
     {
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
@@ -30,6 +32,7 @@ public class SwitchServersController : Controller
     {
         _db.SwitchServers.Add(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
@@ -38,6 +41,7 @@ public class SwitchServersController : Controller
     {
         _db.SwitchServers.Update(model);
         await _db.SaveChangesAsync();
+        if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
@@ -46,6 +50,7 @@ public class SwitchServersController : Controller
     {
         var s = await _db.SwitchServers.FindAsync(id);
         if (s != null) { _db.SwitchServers.Remove(s); await _db.SaveChangesAsync(); }
+        if (IsAjax) return Json(new { ok = true });
         return RedirectToAction(nameof(Index), new { highwayId });
     }
 }
