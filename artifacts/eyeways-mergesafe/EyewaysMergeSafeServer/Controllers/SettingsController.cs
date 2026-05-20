@@ -3,6 +3,7 @@ using EyewaysMergeSafeServer.Models;
 using EyewaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace EyewaysMergeSafeServer.Controllers;
 
@@ -10,14 +11,17 @@ public class SettingsController : Controller
 {
     private readonly AppDbContext _db;
     private readonly IConfiguration _cfg;
-    public SettingsController(AppDbContext db, IConfiguration cfg) { _db = db; _cfg = cfg; }
+    private readonly IWebHostEnvironment _env;
+
+    public SettingsController(AppDbContext db, IConfiguration cfg, IWebHostEnvironment env)
+    { _db = db; _cfg = cfg; _env = env; }
 
     public async Task<IActionResult> Index()
     {
         return View(new SettingsViewModel
         {
             Highways = await _db.Highways.AsNoTracking().OrderBy(h => h.Name).ToListAsync(),
-            TomTomApiKey = _cfg["TomTomApiKey"]
+            TomTomApiKey = _cfg["TomTomApiKey"] ?? ""
         });
     }
 
@@ -26,6 +30,7 @@ public class SettingsController : Controller
     {
         if (ModelState.IsValid)
         {
+            model.CreatedDate = DateTime.UtcNow;
             _db.Highways.Add(model);
             await _db.SaveChangesAsync();
         }
@@ -54,7 +59,17 @@ public class SettingsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult SaveTomTomKey(string apiKey)
     {
-        TempData["KeySaved"] = true;
+        var keyFilePath = Path.Combine(AppContext.BaseDirectory, "tomtomkey.json");
+        var payload = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["TomTomApiKey"] = apiKey?.Trim() ?? ""
+        }, new JsonSerializerOptions { WriteIndented = true });
+        System.IO.File.WriteAllText(keyFilePath, payload);
+
+        var reloadable = _cfg as IConfigurationRoot;
+        reloadable?.Reload();
+
+        TempData["Success"] = "TomTom API key saved successfully.";
         return RedirectToAction(nameof(Index));
     }
 }
