@@ -4,9 +4,11 @@ namespace EyewaysMergeSafeServer.ViewModels;
 
 public class Traffic3DViewModel
 {
-    public List<Highway> Highways { get; set; } = new();
-    public string? SelectedHighwayId { get; set; }
-    public List<MergeZone> Zones { get; set; } = new();
-    public List<SensorDevice> Sensors { get; set; } = new();
-    public string? TomTomApiKey { get; set; }
+    public List<Highway>      Highways          { get; set; } = new();
+    public string?            SelectedHighwayId { get; set; }
+    public string?            SelectedZoneId    { get; set; }
+    public List<MergeZone>    Zones             { get; set; } = new();
+    public List<SwitchServer> SwitchServers     { get; set; } = new();
+    public List<SensorDevice> Sensors           { get; set; } = new();
+    public string?            TomTomApiKey      { get; set; }
 }

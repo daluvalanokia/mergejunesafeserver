@@ -48,7 +48,7 @@ public class ApiController : ControllerBase
     /// Defaults to events from the last 30 seconds when <paramref name="since"/> is omitted.
     /// </summary>
     [HttpGet("events/live")]
-    public async Task<IActionResult> LiveEvents(string? highwayId, string? since)
+    public async Task<IActionResult> LiveEvents(string? highwayId, string? zoneId, string? since)
     {
         DateTime cutoff;
         if (string.IsNullOrEmpty(since) ||
@@ -60,7 +60,8 @@ public class ApiController : ControllerBase
         var events = await _db.VehicleEvents
             .AsNoTracking()
             .Where(e => e.CreatedDate >= cutoff &&
-                        (string.IsNullOrEmpty(highwayId) || e.HighwayId == highwayId))
+                        (string.IsNullOrEmpty(highwayId) || e.HighwayId == highwayId) &&
+                        (string.IsNullOrEmpty(zoneId)    || e.ZoneId    == zoneId))
             .OrderByDescending(e => e.CreatedDate)
             .Take(20)
             .ToListAsync();

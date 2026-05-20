@@ -25,14 +25,20 @@ public class Traffic3DController : Controller
 
         var zones   = await _db.MergeZones.AsNoTracking().Where(z => z.HighwayId == highwayId).ToListAsync();
         var sensors = await _db.SensorDevices.AsNoTracking().Where(d => d.HighwayId == highwayId).ToListAsync();
+        var zoneIds = zones.Select(z => z.ZoneId).ToList();
+        var servers = await _db.SwitchServers.AsNoTracking()
+            .Where(s => s.ZoneId != null && zoneIds.Contains(s.ZoneId))
+            .OrderBy(s => s.ZoneId).ThenBy(s => s.ServerName)
+            .ToListAsync();
 
         return View(new Traffic3DViewModel
         {
-            Highways = highways,
+            Highways          = highways,
             SelectedHighwayId = highwayId,
-            Zones = zones,
-            Sensors = sensors,
-            TomTomApiKey = _cfg["TomTomApiKey"]
+            Zones             = zones,
+            SwitchServers     = servers,
+            Sensors           = sensors,
+            TomTomApiKey      = _cfg["TomTomApiKey"]
         });
     }
 
