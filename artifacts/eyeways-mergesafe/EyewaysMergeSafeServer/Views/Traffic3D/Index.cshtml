@@ -375,6 +375,7 @@ function updateSceneZoneLabel(zoneId) {
 // ── Animation play/pause ─────────────────────────────────────────────────────
 var animationPaused = false;
 function toggleAnimation() {
+    closeVehicleDetail();
     animationPaused = !animationPaused;
     var btn       = document.getElementById('btnAnimToggle');
     var feedTitle = document.getElementById('feedTitle');
@@ -466,6 +467,7 @@ function setMode(m) {
 // ── Three.js Scene3D ─────────────────────────────────────────────────────────
 var speedMult = 1, density = 10, camAngleVal = 45;
 var renderer3d, camera3d, scene3d, vehicles3d = [];
+var raycaster3d = null, mouse3d = null, selectedVehicle3d = null;
 
 function setCamAngle(v) {
     camAngleVal = parseFloat(v);
@@ -553,6 +555,79 @@ function initScene3D() {
         }
     } catch(e) {}
 
+    // ── Click-to-inspect: raycaster setup ────────────────────────────────────
+    raycaster3d = new THREE.Raycaster();
+    mouse3d     = new THREE.Vector2();
+
+    // Build the floating detail panel inside the canvas container
+    var vpanel = document.createElement('div');
+    vpanel.id = 'vehicleDetailPanel';
+    vpanel.style.cssText =
+        'display:none;position:absolute;top:0;left:0;z-index:20;width:300px;' +
+        'background:rgba(8,12,24,.97);border:1px solid rgba(255,255,255,.14);' +
+        'border-radius:10px;backdrop-filter:blur(8px);' +
+        'box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;';
+    vpanel.innerHTML =
+        '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.09);' +
+            'display:flex;justify-content:space-between;align-items:center">' +
+            '<span id="vdTitle" style="font-size:.8rem;font-weight:700;color:#e2e8f0;' +
+                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px"></span>' +
+            '<button id="vdClose" style="background:none;border:none;color:#94a3b8;' +
+                'font-size:1.1rem;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0">' +
+                '×</button>' +
+        '</div>' +
+        '<div style="display:flex;border-bottom:1px solid rgba(255,255,255,.07)">' +
+            '<button id="vdTabFmt" onclick="vdSwitchTab(\'fmt\')" ' +
+                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
+                'background:rgba(59,130,246,.18);border:none;color:#60a5fa;cursor:pointer">' +
+                'Formatted</button>' +
+            '<button id="vdTabRaw" onclick="vdSwitchTab(\'raw\')" ' +
+                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
+                'background:transparent;border:none;color:#64748b;cursor:pointer">' +
+                'Raw JSON</button>' +
+        '</div>' +
+        '<div id="vdBodyFmt" style="padding:10px 12px;max-height:240px;overflow-y:auto"></div>' +
+        '<div id="vdBodyRaw" style="display:none;padding:10px 12px;max-height:240px;overflow-y:auto">' +
+            '<pre id="vdRawPre" style="font-size:.6rem;color:#94a3b8;white-space:pre-wrap;' +
+                'word-break:break-all;margin:0;line-height:1.5"></pre>' +
+        '</div>';
+    container.appendChild(vpanel);
+    vpanel.addEventListener('click', function(e) { e.stopPropagation(); });
+    document.getElementById('vdClose').addEventListener('click', closeVehicleDetail);
+
+    // Hover: change cursor when over a vehicle
+    container.addEventListener('mousemove', function(e) {
+        if (!raycaster3d || !camera3d) return;
+        var rect = renderer3d.domElement.getBoundingClientRect();
+        mouse3d.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+        mouse3d.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+        raycaster3d.setFromCamera(mouse3d, camera3d);
+        var hits = raycaster3d.intersectObjects(vehicles3d, true);
+        container.style.cursor = hits.length ? 'pointer' : '';
+    });
+
+    // Click: pick vehicle and show detail panel
+    container.addEventListener('click', function(e) {
+        var panel = document.getElementById('vehicleDetailPanel');
+        if (panel && panel.contains(e.target)) return;
+        if (!raycaster3d || !camera3d) return;
+        var rect = renderer3d.domElement.getBoundingClientRect();
+        mouse3d.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+        mouse3d.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+        raycaster3d.setFromCamera(mouse3d, camera3d);
+        var hits = raycaster3d.intersectObjects(vehicles3d, true);
+        if (!hits.length) { closeVehicleDetail(); return; }
+        var obj = hits[0].object;
+        while (obj.parent && vehicles3d.indexOf(obj) < 0) obj = obj.parent;
+        if (vehicles3d.indexOf(obj) < 0) { closeVehicleDetail(); return; }
+        showVehicleDetail(obj, e.clientX, e.clientY);
+    });
+
+    // Keyboard dismiss
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeVehicleDetail();
+    });
+
     window.addEventListener('resize', function() {
         if (!renderer3d) return;
         var W2 = container.clientWidth, H2 = container.clientHeight;
@@ -564,7 +639,7 @@ function initScene3D() {
 
 // ── Vehicle spawning ─────────────────────────────────────────────────────────
 
-function spawnV(vSpec, fromEvent, zoneId, isSimulation) {
+function spawnV(vSpec, fromEvent, zoneId, isSimulation, ev) {
     if (!vSpec) vSpec = vehicleGetRandom(null);
     var group = vehicleBuildMesh(vSpec);
     var lane  = [-4, -2, 2, 4][Math.floor(Math.random() * 4)];
@@ -580,7 +655,15 @@ function spawnV(vSpec, fromEvent, zoneId, isSimulation) {
         icon:         vSpec.icon,
         zoneId:       zoneId || '',
         fromEvent:    fromEvent || false,
-        isSimulation: isSimulation || false
+        isSimulation: isSimulation || false,
+        evPayload:    ev ? (ev.payload    || '') : '',
+        evEventType:  ev ? (ev.eventType  || '') : '',
+        evVehicleId:  ev ? (ev.vehicleId  || '') : '',
+        evDeviceId:   ev ? (ev.deviceId   || '') : '',
+        evHighwayId:  ev ? (ev.highwayId  || '') : '',
+        evLatitude:   ev ? (ev.latitude   || null) : null,
+        evLongitude:  ev ? (ev.longitude  || null) : null,
+        evCreatedDate:ev ? (ev.createdDate|| '') : ''
     };
     scene3d.add(group);
     vehicles3d.push(group);
@@ -658,7 +741,7 @@ function pollLiveEvents() {
             lastPollTime = data.serverTime;
             data.events.forEach(function(ev) {
                 var spec = vehicleGetRandom(ev.vehicleType || null);
-                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', false);
+                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', false, ev);
                 if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
                 // Reset opacity so event vehicles are always bright
                 grp.userData._opacityReset = false;
@@ -682,7 +765,7 @@ function pollSimulationEvents() {
             lastSimPollTime = data.serverTime;
             data.events.forEach(function(ev) {
                 var spec = vehicleGetRandom(ev.vehicleType || null);
-                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', true);
+                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', true, ev);
                 if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
                 grp.userData._opacityReset = false;
                 pushFeed3d(grp, true, ev, true);
@@ -736,6 +819,108 @@ function renderFeed3d() {
             '</div>' +
             '</div>';
     }).join('');
+}
+
+// ── Vehicle click-to-inspect ─────────────────────────────────────────────────
+
+function clearVehicleHighlight(v) {
+    if (!v) return;
+    v.traverse(function(c) {
+        if (c.isMesh && c.material && c.material.emissive) {
+            c.material.emissive.setHex(0x000000);
+            c.material.emissiveIntensity = 0;
+        }
+    });
+}
+
+function closeVehicleDetail() {
+    clearVehicleHighlight(selectedVehicle3d);
+    selectedVehicle3d = null;
+    var panel = document.getElementById('vehicleDetailPanel');
+    if (panel) panel.style.display = 'none';
+}
+
+function vdSwitchTab(tab) {
+    document.getElementById('vdBodyFmt').style.display = tab === 'fmt' ? '' : 'none';
+    document.getElementById('vdBodyRaw').style.display = tab === 'raw' ? '' : 'none';
+    document.getElementById('vdTabFmt').style.background = tab === 'fmt' ? 'rgba(59,130,246,.18)' : 'transparent';
+    document.getElementById('vdTabRaw').style.background = tab === 'raw' ? 'rgba(59,130,246,.18)' : 'transparent';
+    document.getElementById('vdTabFmt').style.color = tab === 'fmt' ? '#60a5fa' : '#64748b';
+    document.getElementById('vdTabRaw').style.color = tab === 'raw' ? '#60a5fa' : '#64748b';
+}
+
+function showVehicleDetail(v, cx, cy) {
+    if (selectedVehicle3d && selectedVehicle3d !== v) clearVehicleHighlight(selectedVehicle3d);
+    selectedVehicle3d = v;
+
+    // Amber emissive highlight on selected vehicle
+    v.traverse(function(c) {
+        if (c.isMesh && c.material && c.material.emissive) {
+            c.material.emissive.setHex(0xf59e0b);
+            c.material.emissiveIntensity = 0.55;
+        }
+    });
+
+    var ud = v.userData;
+    var srcTag = ud.isSimulation
+        ? '<span style="background:#f59e0b;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">SIM</span>'
+        : (ud.fromEvent
+            ? '<span style="background:#22c55e;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">LIVE</span>'
+            : '<span style="background:#475569;color:#fff;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">AMBIENT</span>');
+    var dirLabel = ud.lane < 0 ? 'Southbound' : 'Northbound';
+    var spdMph   = Math.round(ud.speed / 0.012);
+
+    document.getElementById('vdTitle').innerHTML = (ud.icon || '🚗') + ' ' +
+        (ud.make || 'Vehicle') + ' ' + (ud.model || '') + srcTag;
+
+    // ── Formatted tab ──
+    var rows = [
+        ['Type',       ud.type         || '—'],
+        ['Make/Model', (ud.make || '—') + ' ' + (ud.model || '')],
+        ['Direction',  dirLabel],
+        ['Speed',      spdMph + ' mph'],
+        ['Event Type', ud.evEventType  || (ud.fromEvent ? '—' : 'ambient fill')],
+        ['Zone',       ud.evZoneId || ud.zoneId || '—'],
+        ['Highway',    ud.evHighwayId  || highwayId || '—'],
+        ['Vehicle ID', ud.evVehicleId  || '—'],
+        ['Device ID',  ud.evDeviceId   || '—'],
+    ];
+    if (ud.evLatitude)    rows.push(['Latitude',  ud.evLatitude]);
+    if (ud.evLongitude)   rows.push(['Longitude', ud.evLongitude]);
+    if (ud.evCreatedDate) rows.push(['Timestamp', new Date(ud.evCreatedDate).toLocaleString()]);
+
+    document.getElementById('vdBodyFmt').innerHTML =
+        '<table style="width:100%;border-collapse:collapse">' +
+        rows.map(function(r) {
+            return '<tr>' +
+                '<td style="color:#64748b;padding:3px 8px 3px 0;width:88px;vertical-align:top;' +
+                    'font-size:.7rem">' + r[0] + '</td>' +
+                '<td style="color:#e2e8f0;padding:3px 0;font-weight:500;font-size:.72rem">' +
+                    r[1] + '</td></tr>';
+        }).join('') + '</table>';
+
+    // ── Raw JSON tab ──
+    var rawContent = '(ambient vehicle — no event record)';
+    if (ud.evPayload) {
+        try { rawContent = JSON.stringify(JSON.parse(ud.evPayload), null, 2); }
+        catch(e) { rawContent = ud.evPayload; }
+    }
+    document.getElementById('vdRawPre').textContent = rawContent;
+
+    vdSwitchTab('fmt');
+
+    // Position panel — clamped inside canvas container
+    var panel     = document.getElementById('vehicleDetailPanel');
+    var container = document.getElementById('scene3dContainer');
+    panel.style.display = '';
+    var rect   = container.getBoundingClientRect();
+    var pw     = 300, ph = panel.offsetHeight || 320;
+    var px     = (cx - rect.left) + 14;
+    var py     = (cy - rect.top)  + 14;
+    if (px + pw > container.clientWidth  - 4) px = (cx - rect.left) - pw - 14;
+    if (py + ph > container.clientHeight - 4) py = (cy - rect.top)  - ph - 14;
+    panel.style.left = Math.max(4, px) + 'px';
+    panel.style.top  = Math.max(4, py) + 'px';
 }
 
 // ── Cross-tab simulation sync ─────────────────────────────────────────────────
