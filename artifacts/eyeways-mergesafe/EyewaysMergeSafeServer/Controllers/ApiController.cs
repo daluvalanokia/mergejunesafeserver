@@ -70,10 +70,15 @@ public class ApiController : ControllerBase
         {
             events = events.Select(e => new
             {
+                e.Id,
                 e.EventType,
                 e.VehicleId,
                 e.SpeedMph,
                 e.ZoneId,
+                e.Direction,
+                e.IsSimulated,
+                e.Latitude,
+                e.Longitude,
                 vehicleType  = ParsePayload(e.Payload, "vehicle_type"),
                 vehicleColor = ParsePayload(e.Payload, "color"),
                 vehicleMake  = ParsePayload(e.Payload, "make"),
@@ -112,16 +117,64 @@ public class ApiController : ControllerBase
         {
             events = events.Select(e => new
             {
+                e.Id,
                 e.EventType,
                 e.VehicleId,
                 e.SpeedMph,
                 e.ZoneId,
+                e.Direction,
+                e.IsSimulated,
+                e.Latitude,
+                e.Longitude,
                 vehicleType  = ParsePayload(e.Payload, "vehicle_type"),
                 vehicleColor = ParsePayload(e.Payload, "color"),
                 vehicleMake  = ParsePayload(e.Payload, "make"),
                 vehicleModel = ParsePayload(e.Payload, "model"),
                 e.CreatedDate
             }),
+            serverTime = DateTime.UtcNow
+        });
+    }
+
+    /// <summary>
+    /// Persisted simulated records for 3D scene playback.
+    /// Returns IsSimulated=true records, ordered oldest-first for animation replay.
+    /// </summary>
+    [HttpGet("events/scene")]
+    public async Task<IActionResult> SceneEvents(string? highwayId, string? zoneId, int limit = 200)
+    {
+        limit = Math.Clamp(limit, 1, 500);
+        var events = await _db.VehicleEvents
+            .AsNoTracking()
+            .Where(e => e.IsSimulated &&
+                        (string.IsNullOrEmpty(highwayId) || e.HighwayId == highwayId) &&
+                        (string.IsNullOrEmpty(zoneId)    || e.ZoneId    == zoneId))
+            .OrderByDescending(e => e.CreatedDate)
+            .Take(limit)
+            .ToListAsync();
+
+        return Ok(new
+        {
+            events = events.Select(e => new
+            {
+                e.Id,
+                e.EventType,
+                e.VehicleId,
+                e.SpeedMph,
+                e.ZoneId,
+                e.HighwayId,
+                e.Direction,
+                e.IsSimulated,
+                e.Latitude,
+                e.Longitude,
+                vehicleType  = ParsePayload(e.Payload, "vehicle_type"),
+                vehicleColor = ParsePayload(e.Payload, "color"),
+                vehicleMake  = ParsePayload(e.Payload, "make"),
+                vehicleModel = ParsePayload(e.Payload, "model"),
+                lane         = ParsePayload(e.Payload, "lane"),
+                e.CreatedDate
+            }).ToList(),
+            count      = events.Count,
             serverTime = DateTime.UtcNow
         });
     }

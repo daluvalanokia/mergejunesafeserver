@@ -81,6 +81,12 @@ public class DataInputFormatsController : Controller
             // Truncate payload to fit [MaxLength(500)]
             var shortPayload = payload.Length > 490 ? payload[..490] : payload;
 
+            var dirStr = GetStr("direction");
+            var cardinal = dirStr is "N" or "S" or "E" or "W" ? dirStr
+                         : dirStr is { Length: > 0 } && int.TryParse(dirStr, out var deg)
+                             ? (deg < 45 || deg >= 315 ? "N" : deg < 135 ? "E" : deg < 225 ? "S" : "W")
+                             : null;
+
             _db.VehicleEvents.Add(new VehicleEvent
             {
                 EventType   = GetStr("event_type") is { Length: > 0 } et ? et : "detection",
@@ -90,6 +96,8 @@ public class DataInputFormatsController : Controller
                 SpeedMph    = GetDbl("speed_mph"),
                 Latitude    = GetDbl("latitude"),
                 Longitude   = GetDbl("longitude"),
+                Direction   = cardinal,
+                IsSimulated = true,
                 Payload     = shortPayload,
                 CreatedDate = now
             });

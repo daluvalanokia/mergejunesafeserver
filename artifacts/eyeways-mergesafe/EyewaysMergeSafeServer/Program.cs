@@ -128,6 +128,19 @@ using (var scope = app.Services.CreateScope())
                 "VALUES ('20260522000000_AddAccountLockout', '8.0.0') ON CONFLICT DO NOTHING");
         }
         catch { }
+        // Migration: AddDirectionAndIsSimulated
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"VehicleEvents\" ADD COLUMN IF NOT EXISTS \"Direction\" TEXT");
+        }
+        catch { }
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"VehicleEvents\" ADD COLUMN IF NOT EXISTS \"IsSimulated\" BOOLEAN NOT NULL DEFAULT FALSE");
+        }
+        catch { }
     }
     else
     {
@@ -141,6 +154,19 @@ using (var scope = app.Services.CreateScope())
         {
             db.Database.ExecuteSqlRaw(
                 "ALTER TABLE \"UserProfiles\" ADD COLUMN \"LockedUntil\" TEXT");
+        }
+        catch { }
+        // Migration: AddDirectionAndIsSimulated
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"VehicleEvents\" ADD COLUMN \"Direction\" TEXT");
+        }
+        catch { }
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"VehicleEvents\" ADD COLUMN \"IsSimulated\" INTEGER NOT NULL DEFAULT 0");
         }
         catch { }
     }

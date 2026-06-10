@@ -120,6 +120,14 @@
                             <i class="bi bi-stop-fill me-1"></i>Stop
                         </button>
                     </div>
+                    <div class="d-flex gap-2 mb-3">
+                        <a href="/Traffic3D" id="btnView3D" class="btn btn-outline-info btn-sm flex-fill" title="Open 3D scene with saved simulation records">
+                            <i class="bi bi-badge-3d me-1"></i>View as 3D Scene
+                        </a>
+                        <button class="btn btn-outline-secondary btn-sm flex-fill" onclick="clearSimLog()">
+                            <i class="bi bi-trash me-1"></i>Clear Log
+                        </button>
+                    </div>
 
                     <div class="d-flex align-items-center gap-2">
                         <span id="simStatusDot" class="rounded-circle d-inline-block flex-shrink-0"
@@ -137,9 +145,7 @@
                     <span><i class="bi bi-activity me-1"></i> Simulation Log</span>
                     <div class="d-flex align-items-center gap-2">
                         <span id="simTotalBadge" class="badge bg-secondary">0 posted</span>
-                        <button class="btn btn-outline-secondary btn-sm" onclick="clearSimLog()" title="Clear log">
-                            <i class="bi bi-trash"></i>
-                        </button>
+
                     </div>
                 </div>
                 <div id="simLog" style="max-height:500px;overflow-y:auto">

@@ -38,6 +38,9 @@
                     <button id="btnAnimToggle" class="btn btn-outline-warning btn-sm" onclick="toggleAnimation()" style="display:none">
                         <i class="bi bi-pause-fill me-1"></i>Pause
                     </button>
+                    <button id="btnLoadScene" class="btn btn-outline-info btn-sm" onclick="loadSceneFromDB()" style="display:none" title="Load saved simulation records into 3D scene">
+                        <i class="bi bi-cloud-download me-1"></i>Load Saved
+                    </button>
                     <a href="/Vehicles" class="btn btn-outline-secondary btn-sm"><i class="bi bi-car-front me-1"></i>Vehicle Registry</a>
                 </div>
             </div>
@@ -547,6 +550,8 @@ function initScene3D() {
 
     var tb = document.getElementById('btnAnimToggle');
     if (tb) { tb.style.display = ''; animationPaused = false; }
+    var lsb = document.getElementById('btnLoadScene');
+    if (lsb) lsb.style.display = '';
 
     // Auto-enter simulation mode if a simulation was already running in another tab
     try {
@@ -648,14 +653,24 @@ function initScene3D() {
 // ── Vehicle spawning ─────────────────────────────────────────────────────────
 
 function spawnV(vSpec, fromEvent, zoneId, isSimulation, ev) {
-    if (!vSpec) vSpec = vehicleGetRandom(null);
+    if (!vSpec) vSpec = vehicleGetRandom(ev && ev.vehicleType ? ev.vehicleType : null);
     var group = vehicleBuildMesh(vSpec);
-    var lane  = [-4, -2, 2, 4][Math.floor(Math.random() * 4)];
+    // Use cardinal direction from event if available, otherwise assign by lane
+    var cardinal  = ev && ev.direction ? ev.direction : null;
+    var lanePool  = cardinal === 'N' ? [-4,-2] : cardinal === 'S' ? [2,4]
+                  : cardinal === 'E' ? [2,4]   : cardinal === 'W' ? [-4,-2]
+                  : [-4,-2,2,4];
+    var lane      = lanePool[Math.floor(Math.random() * lanePool.length)];
+    if (!cardinal) cardinal = lane < 0 ? 'N' : 'S';
     group.position.set(lane, 0, (Math.random() * 80) - 40);
-    if (lane > 0) group.rotation.y = Math.PI;
+    // Rotate mesh to face correct direction
+    var rotY = cardinal === 'N' ? Math.PI : cardinal === 'S' ? 0
+             : cardinal === 'E' ? -Math.PI/2 : Math.PI/2;
+    group.rotation.y = rotY;
     group.userData = {
-        speed:        (25 + Math.random() * 55) * 0.012,
-        dir:          lane < 0 ? 1 : -1,
+        speed:        ev && ev.speedMph ? ev.speedMph * 0.012 : (25 + Math.random() * 55) * 0.012,
+        dir:          cardinal === 'N' || cardinal === 'W' ? -1 : 1,
+        cardinal:     cardinal,
         lane:         lane,
         type:         vSpec.type,
         make:         vSpec.make,
@@ -794,7 +809,7 @@ function pushFeed3d(v, fromInput, ev, isSimulation) {
         model:        v.userData.model || '',
         eventType:    evType,
         spd:          spd,
-        dir:          v.userData.lane < 0 ? 'SB' : 'NB',
+        dir:          v.userData.cardinal || (v.userData.lane < 0 ? 'N' : 'S'),
         zoneId:       v.userData.zoneId || '',
         time:         new Date().toLocaleTimeString(),
         fromInput:    fromInput || false,
@@ -802,6 +817,46 @@ function pushFeed3d(v, fromInput, ev, isSimulation) {
     });
     if (feedItems3d.length > 30) feedItems3d.length = 30;
     renderFeed3d();
+}
+
+// ── Direction label helper ────────────────────────────────────────────────────
+function dirLabel(d) {
+    return d === 'N' ? '↑ Northbound' : d === 'S' ? '↓ Southbound'
+         : d === 'E' ? '→ Eastbound'  : d === 'W' ? '← Westbound'
+         : d || '—';
+}
+
+// ── Event type color map ──────────────────────────────────────────────────────
+var FEED_EVENT_COLORS = {
+    detection:'#22c55e', merge:'#3b82f6', conflict:'#ef4444',
+    speeding:'#f59e0b',  fault:'#8b5cf6',  ambient:'#64748b'
+};
+
+// ── Load persisted simulated records into 3D scene ───────────────────────────
+function loadSceneFromDB() {
+    var url = '/api/events/scene?limit=100&highwayId=' + encodeURIComponent(highwayId);
+    if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.events || !data.events.length) {
+                var feed = document.getElementById('trafficFeed');
+                if (feed) feed.innerHTML = '<p class="text-muted small p-2">No saved simulation records yet. Run a simulation first.</p>';
+                return;
+            }
+            // Clear current vehicles
+            if (vehicles3d) { vehicles3d.forEach(function(v) { scene3d.remove(v); }); vehicles3d.length = 0; }
+            feedItems3d.length = 0;
+            // Stagger spawn so vehicles appear animated
+            data.events.forEach(function(ev, i) {
+                setTimeout(function() {
+                    var spec = vehicleGetRandom(ev.vehicleType || null);
+                    var grp  = spawnV(spec, true, ev.zoneId || '', true, ev);
+                    pushFeed3d(grp, true, ev, true);
+                }, i * 80);
+            });
+        })
+        .catch(function(e) { console.error('loadSceneFromDB error', e); });
 }
 
 function renderFeed3d() {
@@ -824,7 +879,7 @@ function renderFeed3d() {
             '</div>' +
             '<div class="d-flex gap-2 align-items-center mt-1">' +
             '<span class="fw-bold" style="color:' + ec + ';font-size:.74rem">' + f.eventType.toUpperCase() + '</span>' +
-            '<span class="text-muted" style="font-size:.74rem">' + f.dir + ' · ' + f.spd + ' mph</span>' +
+            '<span class="text-muted" style="font-size:.74rem">' + dirLabel(f.dir) + ' · ' + f.spd + ' mph</span>' +
             '</div>' +
             '</div>';
     }).join('');
@@ -876,7 +931,9 @@ function showVehicleDetail(v, cx, cy) {
         : (ud.fromEvent
             ? '<span style="background:#22c55e;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">LIVE</span>'
             : '<span style="background:#475569;color:#fff;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">AMBIENT</span>');
-    var dirLabel = ud.lane < 0 ? 'Southbound' : 'Northbound';
+    var cardinal3d = ud.cardinal || (ud.lane < 0 ? 'N' : 'S');
+    var dirLabel3d = cardinal3d === 'N' ? 'Northbound (↑)' : cardinal3d === 'S' ? 'Southbound (↓)'
+                   : cardinal3d === 'E' ? 'Eastbound (→)'  : cardinal3d === 'W' ? 'Westbound (←)' : '—';
     var spdMph   = Math.round(ud.speed / 0.012);
 
     document.getElementById('vdTitle').innerHTML = (ud.icon || '🚗') + ' ' +
@@ -886,7 +943,7 @@ function showVehicleDetail(v, cx, cy) {
     var rows = [
         ['Type',       ud.type         || '—'],
         ['Make/Model', (ud.make || '—') + ' ' + (ud.model || '')],
-        ['Direction',  dirLabel],
+        ['Direction',  dirLabel3d],
         ['Speed',      spdMph + ' mph'],
         ['Event Type', ud.evEventType  || (ud.fromEvent ? '—' : 'ambient fill')],
         ['Zone',       ud.evZoneId || ud.zoneId || '—'],

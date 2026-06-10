@@ -25,7 +25,7 @@ public class InputPayloadService
                 "speed_mph"       => _rng.Next(20, 100),
                 "latitude"        => Math.Round(32.7767 + (_rng.NextDouble() - 0.5) * 0.2, 6),
                 "longitude"       => Math.Round(-96.7970 + (_rng.NextDouble() - 0.5) * 0.2, 6),
-                "direction"       => _rng.Next(0, 360),
+                "direction"       => new[] { "N", "S", "E", "W" }[_rng.Next(4)],
                 "lane"            => _rng.Next(1, 5),
                 "vehicle_type"    => new[] { "sedan", "suv", "truck", "motorcycle", "van" }[_rng.Next(5)],
                 "event_type"      => new[] { "detection", "merge", "speeding", "conflict", "fault" }[_rng.Next(5)],

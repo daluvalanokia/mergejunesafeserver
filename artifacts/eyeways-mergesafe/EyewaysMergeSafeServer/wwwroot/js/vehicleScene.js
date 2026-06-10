@@ -14,7 +14,7 @@ var VEHICLE_REGISTRY = [
     { type:'suv', make:'Ford',       model:'Explorer',   size:'large',  icon:'🚙', colors:['#1a1a2e','#4682b4','#8b4513','#696969','#006400'] },
     { type:'suv', make:'Chevrolet',  model:'Tahoe',      size:'large',  icon:'🚙', colors:['#1c1c1c','#f5f5dc','#556b2f','#8b0000','#4169e1'] },
     { type:'suv', make:'Toyota',     model:'RAV4',       size:'medium', icon:'🚙', colors:['#cc0000','#1a1a2e','#808080','#f0f0f0','#2e8b57'] },
-    { type:'suv', make:'Honda',      model:'CR-V',       size:'medium', icon:'🚙', colors:['#b22222','#708090','#2f4f4f','#ffd700','#4682b4'] },
+    { type:'suv', make:'Honda',      model:'CR-V',       size:'medium', icon:'🚙', colors:['#b22222','#708080','#2f4f4f','#ffd700','#4682b4'] },
     { type:'suv', make:'Jeep',       model:'Wrangler',   size:'medium', icon:'🚙', colors:['#ff4500','#2f4f4f','#f5f5f5','#ffd700','#1a1a2e'] },
     { type:'suv', make:'Tesla',      model:'Model X',    size:'large',  icon:'🚙', colors:['#f5f5f5','#cc0000','#1a1a2e','#808080','#000000'] },
     // ── Trucks ──────────────────────────────────────────────────────────────
@@ -48,7 +48,9 @@ function vehicleHexInt(hex) {
     return parseInt((hex || '#888888').replace('#', ''), 16);
 }
 
-// ── Three.js mesh builders ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Three.js mesh builders
+// ─────────────────────────────────────────────────────────────────────────────
 
 function vehicleBuildMesh(vSpec) {
     var group  = new THREE.Group();
@@ -112,38 +114,284 @@ function vehicleBuildMesh(vSpec) {
         ex.rotation.z = Math.PI/2; ex.position.set(0.28, 0.42, -0.50);
         group.add(bd, fr, st, hb, wf, wr, ex);
 
-    } else if (type === 'van') {
+    } else { // van / default
         var bd  = new THREE.Mesh(new THREE.BoxGeometry(2.10, 1.65, 5.00), body); bd.position.y = 0.97;
-        var fg  = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.80, 0.06), glass); fg.position.set(0, 1.20, 2.52); fg.rotation.x = 0.12;
-        var sl  = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.50, 2.00), glass); sl.position.set(-1.03, 1.20, -0.50);
-        var sr  = sl.clone(); sr.position.x = 1.03;
-        var st  = new THREE.Mesh(new THREE.BoxGeometry(2.12, 0.22, 5.02), new THREE.MeshLambertMaterial({ color: 0x111122 })); st.position.y = 1.65;
-        var hl  = new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.20, 0.06), light); hl.position.set(-0.72, 0.90, 2.53);
+        var fg  = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.80, 0.06), glass); fg.position.set(0, 1.20, 2.52); fg.rotation.x = 0.15;
+        var rg  = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.80, 0.06), glass); rg.position.set(0, 1.20,-2.52); rg.rotation.x =-0.15;
+        var sl  = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.50, 4.60), glass); sl.position.set(-1.025, 1.00, 0);
+        var sr  = sl.clone(); sr.position.x = 1.025;
+        var hl  = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.22, 0.06), light); hl.position.set(-0.72, 0.85, 2.52);
         var hr  = hl.clone(); hr.position.x = 0.72;
-        _vWheels(group, dark, chrome, 2.16, 0.38, 1.75);
-        group.add(bd, fg, sl, sr, st, hl, hr);
-
-    } else {
-        var b = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.75, 3.2), body); b.position.y = 0.375;
-        _vWheels(group, dark, chrome, 1.86, 0.28, 1.20);
-        group.add(b);
+        _vWheels(group, dark, chrome, 2.16, 0.38, 1.80);
+        group.add(bd, fg, rg, sl, sr, hl, hr);
     }
 
     group.traverse(function(c) { if (c.isMesh) c.castShadow = true; });
     return group;
 }
 
-function _vWheels(group, tireMat, rimMat, bW, r, wb) {
-    var tg = new THREE.CylinderGeometry(r, r, 0.22, 12);
-    var rg = new THREE.CylinderGeometry(r * 0.55, r * 0.55, 0.24, 8);
-    [ [bW/2+0.02, wb], [-(bW/2+0.02), wb], [bW/2+0.02, -wb], [-(bW/2+0.02), -wb] ]
-    .forEach(function(p) {
-        var t  = new THREE.Mesh(tg, tireMat); t.rotation.z  = Math.PI/2; t.position.set(p[0], r, p[1]);
-        var ri = new THREE.Mesh(rg, rimMat);  ri.rotation.z = Math.PI/2; ri.position.set(p[0], r, p[1]);
-        group.add(t, ri);
+function _vWheels(group, tireMat, rimMat, bodyWidth, r, wheelBase) {
+    var wg = new THREE.CylinderGeometry(r, r, 0.28, 14);
+    var rg = new THREE.CylinderGeometry(r * 0.55, r * 0.55, 0.30, 10);
+    [-wheelBase, wheelBase].forEach(function(wz) {
+        [-bodyWidth/2, bodyWidth/2].forEach(function(wx) {
+            var tire = new THREE.Mesh(wg, tireMat); tire.rotation.z = Math.PI/2;
+            tire.position.set(wx, r, wz);
+            var rim  = new THREE.Mesh(rg, rimMat);  rim.rotation.z  = Math.PI/2;
+            rim.position.set(wx, r, wz);
+            group.add(tire, rim);
+        });
     });
 }
 
-var FEED_EVENT_COLORS = {
-    detection:'#22c55e', merge:'#3b82f6', speeding:'#f59e0b', conflict:'#ef4444', fault:'#a855f7'
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// SceneManager — owns Three.js scene + Web Worker for position ticks
+// ─────────────────────────────────────────────────────────────────────────────
+
+var SceneManager = (function() {
+    var scene, camera, renderer, animId;
+    var meshMap    = {};   // vehicleId → { group, data }
+    var worker     = null;
+    var raycaster  = new THREE.Raycaster();
+    var mouse      = new THREE.Vector2();
+    var selectedId = null;
+    var _container, _sceneMode, _onVehicleClick;
+
+    // Direction helpers
+    function dirToRot(dir) {
+        switch (dir) {
+            case 'N': return Math.PI;
+            case 'S': return 0;
+            case 'E': return -Math.PI / 2;
+            case 'W': return  Math.PI / 2;
+            default:  return 0;
+        }
+    }
+
+    function init(containerId, opts) {
+        opts = opts || {};
+        _container     = document.getElementById(containerId);
+        _sceneMode     = opts.sceneMode || 'live';   // 'live' | 'simulator'
+        _onVehicleClick = opts.onVehicleClick || null;
+
+        if (!_container) return;
+        var w = _container.clientWidth, h = _container.clientHeight || 500;
+
+        // ── Renderer ──
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(w, h);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+        _container.appendChild(renderer.domElement);
+
+        // ── Scene ──
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0f1e);
+        scene.fog        = new THREE.Fog(0x0a0f1e, 80, 150);
+
+        // ── Camera ──
+        camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 300);
+        camera.position.set(0, 28, 48);
+        camera.lookAt(0, 0, 0);
+
+        // ── Lights ──
+        var amb = new THREE.AmbientLight(0x334466, 0.8);
+        var sun = new THREE.DirectionalLight(0xffeebb, 1.2);
+        sun.position.set(30, 60, 40);
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(1024, 1024);
+        scene.add(amb, sun);
+
+        // ── Road ──
+        _buildRoad();
+
+        // ── Web Worker ──
+        if (typeof Worker !== 'undefined') {
+            try {
+                worker = new Worker('/js/sceneWorker.js');
+                worker.onmessage = _onWorkerMessage;
+                worker.onerror   = function(e) { console.warn('SceneWorker error:', e.message); worker = null; };
+            } catch(e) { worker = null; }
+        }
+
+        // ── Click handler ──
+        renderer.domElement.addEventListener('click', _onCanvasClick);
+
+        // ── Resize ──
+        window.addEventListener('resize', function() {
+            var nw = _container.clientWidth, nh = _container.clientHeight || 500;
+            camera.aspect = nw / nh;
+            camera.updateProjectionMatrix();
+            renderer.setSize(nw, nh);
+        });
+
+        _animate();
+    }
+
+    function _buildRoad() {
+        // Ground
+        var ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(200, 200),
+            new THREE.MeshLambertMaterial({ color: 0x1a1a2e })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Road surface
+        var road = new THREE.Mesh(
+            new THREE.PlaneGeometry(20, 120),
+            new THREE.MeshLambertMaterial({ color: 0x2d2d2d })
+        );
+        road.rotation.x = -Math.PI / 2;
+        road.position.y  = 0.01;
+        road.receiveShadow = true;
+        scene.add(road);
+
+        // Lane markings
+        for (var i = -2; i <= 2; i++) {
+            for (var j = -5; j < 5; j++) {
+                var mark = new THREE.Mesh(
+                    new THREE.PlaneGeometry(0.15, 5),
+                    new THREE.MeshLambertMaterial({ color: 0xffffff, opacity: 0.6, transparent: true })
+                );
+                mark.rotation.x = -Math.PI / 2;
+                mark.position.set(i * 4, 0.02, j * 12);
+                scene.add(mark);
+            }
+        }
+    }
+
+    function _animate() {
+        animId = requestAnimationFrame(_animate);
+        if (worker) {
+            worker.postMessage({ type: 'tick' });
+        } else {
+            // Fallback: move vehicles on main thread
+            Object.values(meshMap).forEach(function(v) {
+                var speed = (v.data.speedMph || 40) * 0.016 * 0.3;
+                var dir   = v.data.direction || 'S';
+                if (dir === 'N' || dir === 'S') v.group.position.z += (dir === 'S' ? 1 : -1) * speed;
+                if (dir === 'E' || dir === 'W') v.group.position.x += (dir === 'E' ? 1 : -1) * speed;
+                if (v.group.position.z >  60) v.group.position.z = -60;
+                if (v.group.position.z < -60) v.group.position.z =  60;
+                if (v.group.position.x >  60) v.group.position.x = -60;
+                if (v.group.position.x < -60) v.group.position.x =  60;
+            });
+        }
+        renderer.render(scene, camera);
+    }
+
+    function _onWorkerMessage(e) {
+        if (e.data.type !== 'positions') return;
+        e.data.vehicles.forEach(function(pos) {
+            var v = meshMap[pos.id];
+            if (v) {
+                v.group.position.x  = pos.x;
+                v.group.position.z  = pos.z;
+                v.group.rotation.y  = pos.rot;
+            }
+        });
+    }
+
+    function _onCanvasClick(e) {
+        if (!_onVehicleClick) return;
+        var rect  = renderer.domElement.getBoundingClientRect();
+        mouse.x   =  ((e.clientX - rect.left)  / rect.width  ) * 2 - 1;
+        mouse.y   = -((e.clientY - rect.top)   / rect.height ) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+
+        var allMeshes = [];
+        Object.entries(meshMap).forEach(function(pair) {
+            pair[1].group.traverse(function(c) {
+                if (c.isMesh) { c.__vehicleId = pair[0]; allMeshes.push(c); }
+            });
+        });
+
+        var hits = raycaster.intersectObjects(allMeshes, false);
+        if (hits.length > 0) {
+            var vid = hits[0].object.__vehicleId;
+            if (vid && meshMap[vid]) {
+                selectedId = vid;
+                _onVehicleClick(vid, meshMap[vid].data);
+            }
+        }
+    }
+
+    function addVehicle(id, data, x, z) {
+        if (meshMap[id]) return;
+        var vSpec = vehicleGetRandom(data.vehicleType || data.type);
+        var group = vehicleBuildMesh(vSpec);
+        var dir   = data.direction || 'S';
+        group.position.set(x || 0, 0, z || 0);
+        group.rotation.y = (dir === 'N' ? Math.PI : dir === 'E' ? -Math.PI/2 : dir === 'W' ? Math.PI/2 : 0);
+        scene.add(group);
+        meshMap[id] = { group: group, data: Object.assign({}, data, { vehicleSpec: vSpec }) };
+
+        if (worker) {
+            worker.postMessage({ type: 'addVehicle', vehicle: {
+                id: id, x: x || 0, z: z || 0,
+                speed: data.speedMph || 40,
+                dir:   dir,
+                lane:  data.lane || 2
+            }});
+        }
+    }
+
+    function removeVehicle(id) {
+        if (!meshMap[id]) return;
+        scene.remove(meshMap[id].group);
+        delete meshMap[id];
+    }
+
+    function clearVehicles() {
+        Object.keys(meshMap).forEach(removeVehicle);
+        if (worker) worker.postMessage({ type: 'removeAll' });
+    }
+
+    function setSpeedMult(mult) {
+        if (worker) worker.postMessage({ type: 'setSpeed', mult: mult });
+    }
+
+    function setCamAngle(deg) {
+        var rad = (deg || 45) * Math.PI / 180;
+        var dist = 60;
+        camera.position.set(0, Math.sin(rad) * dist, Math.cos(rad) * dist);
+        camera.lookAt(0, 0, 0);
+    }
+
+    function getVehicleCount() { return Object.keys(meshMap).length; }
+
+    function getSceneMode() { return _sceneMode; }
+
+    function setSceneMode(mode) {
+        _sceneMode = mode;   // 'live' | 'simulator'
+    }
+
+    function destroy() {
+        if (animId) cancelAnimationFrame(animId);
+        if (worker) { worker.terminate(); worker = null; }
+        if (renderer && _container) {
+            _container.removeChild(renderer.domElement);
+            renderer.dispose();
+        }
+        meshMap = {};
+    }
+
+    return {
+        init:            init,
+        addVehicle:      addVehicle,
+        removeVehicle:   removeVehicle,
+        clearVehicles:   clearVehicles,
+        setSpeedMult:    setSpeedMult,
+        setCamAngle:     setCamAngle,
+        getVehicleCount: getVehicleCount,
+        getSceneMode:    getSceneMode,
+        setSceneMode:    setSceneMode,
+        destroy:         destroy,
+        get scene()    { return scene; },
+        get camera()   { return camera; },
+        get renderer() { return renderer; }
+    };
+})();
+

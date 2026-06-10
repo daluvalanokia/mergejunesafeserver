@@ -120,6 +120,8 @@ namespace EyewaysMergeSafeServer.Migrations
                 b.Property<string>("DeviceId").HasMaxLength(50).HasColumnType("TEXT");
                 b.Property<string>("EventType").IsRequired().HasMaxLength(30).HasColumnType("TEXT");
                 b.Property<string>("HighwayId").IsRequired().HasMaxLength(50).HasColumnType("TEXT");
+                b.Property<string>("Direction").HasMaxLength(2).HasColumnType("TEXT");
+                b.Property<bool>("IsSimulated").HasColumnType("INTEGER");
                 b.Property<double?>("Latitude").HasColumnType("REAL");
                 b.Property<double?>("Longitude").HasColumnType("REAL");
                 b.Property<string>("Payload").HasMaxLength(500).HasColumnType("TEXT");
