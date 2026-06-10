@@ -1,0 +1,44 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Mockup Sandbox: Dev",
+      "type": "shell",
+      "command": "PORT=5173 BASE_PATH=/ pnpm --filter @workspace/mockup-sandbox run dev",
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": false
+      }
+    },
+    {
+      "label": "API Server: Dev",
+      "type": "shell",
+      "command": "pnpm --filter @workspace/api-server run dev",
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": false
+      }
+    },
+    {
+      "label": "API Server: Dev (inspect)",
+      "type": "shell",
+      "command": "NODE_OPTIONS=--inspect=9229 pnpm --filter @workspace/api-server run dev",
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": false
+      }
+    }
+  ]
+}

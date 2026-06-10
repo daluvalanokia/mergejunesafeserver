@@ -1,0 +1,39 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Mockup Sandbox in Chrome",
+            "request": "launch",
+            "type": "pwa-chrome",
+            "url": "http://localhost:5173",
+            "webRoot": "${workspaceFolder}/artifacts/mockup-sandbox",
+            "preLaunchTask": "Mockup Sandbox: Dev"
+        },
+        {
+            "name": "Attach to API Server",
+            "request": "attach",
+            "type": "pwa-node",
+            "port": 9229,
+            "restart": true,
+            "localRoot": "${workspaceFolder}/artifacts/api-server",
+            "remoteRoot": "${workspaceFolder}/artifacts/api-server"
+        },
+        {
+            "name": "Launch and Debug API Server",
+            "request": "launch",
+            "type": "pwa-node",
+            "program": "${workspaceFolder}/artifacts/api-server/build.mjs",
+            "cwd": "${workspaceFolder}/artifacts/api-server",
+            "runtimeExecutable": "pnpm",
+            "runtimeArgs": ["run", "dev"],
+            "env": {
+                "NODE_OPTIONS": "--inspect=9229"
+            },
+            "console": "integratedTerminal",
+            "preLaunchTask": "API Server: Dev (inspect)"
+        }
+    ]
+}
