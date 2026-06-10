@@ -381,57 +381,10 @@ function updateSceneZoneLabel(zoneId) {
 var animationPaused = false;
 function toggleAnimation() {
     closeVehicleDetail();
-    animationPaused = !animationPaused;
-    var btn       = document.getElementById('btnAnimToggle');
-    var feedTitle = document.getElementById('feedTitle');
-    var simBadge  = document.getElementById('simModeBadge');
-    var liveBadge = document.getElementById('livePulseBadge');
-    if (!btn) return;
-    btn.innerHTML = animationPaused
-        ? '<i class="bi bi-play-fill me-1"></i>Resume'
-        : '<i class="bi bi-pause-fill me-1"></i>Pause';
-    btn.className = animationPaused ? 'btn btn-success btn-sm' : 'btn btn-outline-warning btn-sm';
-
-    if (animationPaused) {
-        // ── PAUSED: clear scene, stop live feed, start simulation-only ───
-        // 1. Remove every vehicle mesh from the WebGL scene
-        vehicles3d.forEach(function(v) { scene3d.remove(v); });
-        vehicles3d.length = 0;
-        // 2. Clear feed panel
-        feedItems3d.length = 0;
-        var feedEl = document.getElementById('trafficFeed');
-        if (feedEl) feedEl.innerHTML =
-            '<p class="text-muted small p-2"><i class="bi bi-cpu me-2"></i>' +
-            'Scene cleared — waiting for simulation events…</p>';
-        // 3. Switch polling to simulation-only
-        if (liveEventInterval) { clearInterval(liveEventInterval); liveEventInterval = null; }
-        lastSimPollTime = new Date(Date.now() - 5000).toISOString();
-        simEventInterval = setInterval(pollSimulationEvents, 3000);
-        pollSimulationEvents();
-        // 4. Update UI indicators
-        if (feedTitle) { feedTitle.textContent = 'Simulation Feed'; feedTitle.style.color = '#f59e0b'; }
-        if (simBadge)  simBadge.style.display = '';
-        if (liveBadge) { liveBadge.textContent = 'SIM ONLY'; liveBadge.style.background = '#92400e'; }
+    if (!animationPaused) {
+        enterSimMode();
     } else {
-        // ── RESUMED: clear sim vehicles, restart live feed ────────────────
-        // 1. Remove simulation vehicles from WebGL scene
-        vehicles3d.forEach(function(v) { scene3d.remove(v); });
-        vehicles3d.length = 0;
-        // 2. Clear feed
-        feedItems3d.length = 0;
-        var feedEl = document.getElementById('trafficFeed');
-        if (feedEl) feedEl.innerHTML =
-            '<p class="text-muted small p-2"><i class="bi bi-arrow-repeat me-2"></i>' +
-            'Resuming live feed…</p>';
-        // 3. Switch polling back to live
-        if (simEventInterval) { clearInterval(simEventInterval); simEventInterval = null; }
-        liveEventInterval = setInterval(pollLiveEvents, 3000);
-        lastPollTime = new Date(Date.now() - 10000).toISOString();
-        pollLiveEvents();
-        // 4. Restore UI indicators
-        if (feedTitle) { feedTitle.textContent = 'Live Feed'; feedTitle.style.color = ''; }
-        if (simBadge)  simBadge.style.display = 'none';
-        if (liveBadge) { liveBadge.textContent = 'LIVE'; liveBadge.style.background = ''; }
+        exitSimMode();
     }
 }
 
@@ -559,27 +512,10 @@ function initScene3D() {
     try {
         var simWasActive = localStorage.getItem('eyeways_sim_active') === 'true';
         if (fromSimPage || simWasActive) {
-            // Step 1: Switch to sim-only feed (stop live polling, start sim polling)
-            if (liveEventInterval) { clearInterval(liveEventInterval); liveEventInterval = null; }
-            animationPaused = true;
-            var tb2 = document.getElementById('btnAnimToggle');
-            if (tb2) { tb2.innerHTML = '<i class="bi bi-play-fill me-1"></i>Resume'; tb2.className = 'btn btn-success btn-sm'; }
-            var feedTitle2 = document.getElementById('feedTitle');
-            var simBadge2  = document.getElementById('simModeBadge');
-            var liveBadge2 = document.getElementById('livePulseBadge');
-            if (feedTitle2) { feedTitle2.textContent = 'Simulation Feed'; feedTitle2.style.color = '#f59e0b'; }
-            if (simBadge2)  simBadge2.style.display = '';
-            if (liveBadge2) { liveBadge2.textContent = 'SIM ONLY'; liveBadge2.style.background = '#92400e'; }
-            // Step 2: Load already-saved sim records immediately into scene
-            setTimeout(function() {
-                loadSceneFromDB();
-                // Step 3: Also start live sim polling to catch new events as sim continues
-                lastSimPollTime = new Date(Date.now() - 60000).toISOString(); // look back 60s
-                if (!simEventInterval) {
-                    simEventInterval = setInterval(pollSimulationEvents, 3000);
-                }
-                pollSimulationEvents();
-            }, 400);
+            // Ensure the 3D scene is visible and initialized FIRST, then load sim data
+            setMode('3d');
+            // Give initScene3D() time to finish building the WebGL canvas
+            setTimeout(enterSimMode, 600);
         }
     } catch(e) { console.error('sim auto-enter error', e); }
 
@@ -798,6 +734,62 @@ function pollLiveEvents() {
         .catch(function() {});
 }
 
+// ── Enter / exit simulation mode ────────────────────────────────────────────
+
+function enterSimMode() {
+    if (!scene3dInitialized) {
+        // Scene not ready yet — retry after another 400ms
+        setTimeout(enterSimMode, 400);
+        return;
+    }
+    // 1. Stop live polling
+    if (liveEventInterval) { clearInterval(liveEventInterval); liveEventInterval = null; }
+    // 2. Clear current scene vehicles
+    vehicles3d.forEach(function(v) { scene3d.remove(v); });
+    vehicles3d.length = 0;
+    feedItems3d.length = 0;
+    // 3. Set paused flag + update UI
+    animationPaused = true;
+    var btn = document.getElementById('btnAnimToggle');
+    if (btn) { btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Resume'; btn.className = 'btn btn-success btn-sm'; }
+    var feedTitle = document.getElementById('feedTitle');
+    var simBadge  = document.getElementById('simModeBadge');
+    var liveBadge = document.getElementById('livePulseBadge');
+    if (feedTitle) { feedTitle.textContent = 'Simulation Feed'; feedTitle.style.color = '#f59e0b'; }
+    if (simBadge)  simBadge.style.display = '';
+    if (liveBadge) { liveBadge.textContent = 'SIM ONLY'; liveBadge.style.background = '#92400e'; }
+    // 4. Load all persisted sim records into scene (loadSceneFromDB sets lastSimPollTime)
+    lastSimPollTime = new Date().toISOString(); // poll cursor: only NEW events after this point
+    loadSceneFromDB();
+    // 5. Start delta-polling so NEW sim events appear as the DataInputFormats sim keeps running
+    if (!simEventInterval) {
+        simEventInterval = setInterval(pollSimulationEvents, 3000);
+    }
+}
+
+function exitSimMode() {
+    if (simEventInterval) { clearInterval(simEventInterval); simEventInterval = null; }
+    vehicles3d.forEach(function(v) { scene3d.remove(v); });
+    vehicles3d.length = 0;
+    feedItems3d.length = 0;
+    animationPaused = false;
+    var btn = document.getElementById('btnAnimToggle');
+    if (btn) { btn.innerHTML = '<i class="bi bi-pause-fill me-1"></i>Pause'; btn.className = 'btn btn-outline-warning btn-sm'; }
+    var feedTitle = document.getElementById('feedTitle');
+    var simBadge  = document.getElementById('simModeBadge');
+    var liveBadge = document.getElementById('livePulseBadge');
+    if (feedTitle) { feedTitle.textContent = 'Live Feed'; feedTitle.style.color = ''; }
+    if (simBadge)  simBadge.style.display = 'none';
+    if (liveBadge) { liveBadge.textContent = 'LIVE'; liveBadge.style.background = ''; }
+    var feedEl = document.getElementById('trafficFeed');
+    if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2"><i class="bi bi-arrow-repeat me-2"></i>Resuming live feed…</p>';
+    if (!liveEventInterval) {
+        lastPollTime = new Date(Date.now() - 10000).toISOString();
+        liveEventInterval = setInterval(pollLiveEvents, 3000);
+        pollLiveEvents();
+    }
+}
+
 // ── Simulation-only polling (used when paused) ───────────────────────────────
 
 function pollSimulationEvents() {
@@ -883,15 +875,10 @@ function loadSceneFromDB() {
                     pushFeed3d(grp, true, ev, true);
                 }, i * 80);
             });
-            // After all vehicles spawned, start continuous sim polling for new arrivals
+            // After all vehicles spawned, advance the sim poll cursor to avoid duplicates
             setTimeout(function() {
-                // Set lastSimPollTime to the most recent event so we only pick up NEW ones
                 if (latestTs) lastSimPollTime = latestTs;
-                else lastSimPollTime = new Date(Date.now() - 5000).toISOString();
-                if (!simEventInterval) {
-                    simEventInterval = setInterval(pollSimulationEvents, 3000);
-                }
-                console.log('[3D] Loaded ' + total + ' sim records. Now polling for new events since ' + lastSimPollTime);
+                console.log('[3D] Loaded ' + total + ' sim records. Polling cursor: ' + lastSimPollTime);
             }, total * 80 + 200);
         })
         .catch(function(e) { console.error('loadSceneFromDB error', e); });
@@ -1030,14 +1017,11 @@ function showVehicleDetail(v, cx, cy) {
 // ── Cross-tab simulation sync ─────────────────────────────────────────────────
 (function() {
     function onSimStateChange(simStarted) {
-        if (!scene3dInitialized) return;
         if (simStarted) {
-            // Sim started in another tab: switch to sim mode and load/refresh data
-            if (!animationPaused) toggleAnimation();  // enters sim-only poll mode
-            setTimeout(loadSceneFromDB, 800);         // then load the actual DB records
+            if (!scene3dInitialized) { setMode('3d'); setTimeout(enterSimMode, 600); }
+            else if (!animationPaused) enterSimMode();
         } else {
-            // Sim stopped: resume live feed
-            if (animationPaused) toggleAnimation();
+            if (animationPaused) exitSimMode();
         }
     }
     if (typeof BroadcastChannel !== 'undefined') {

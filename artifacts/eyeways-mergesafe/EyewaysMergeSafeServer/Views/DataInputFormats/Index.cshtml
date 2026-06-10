@@ -475,7 +475,8 @@ function openSimScene() {
     try { localStorage.setItem("eyeways_sim_active", "true"); } catch(e) {}
     try { localStorage.setItem("eyeways_sim_highway", hwId); } catch(e) {}
     var url = "/Traffic3D?from=sim" + (hwId ? "&highwayId=" + encodeURIComponent(hwId) : "");
-    window.location.href = url;
+    // Open in a NEW TAB so the simulation timer keeps running in this tab
+    window.open(url, "_blank");
 }
 
 function clearSimLog() {
