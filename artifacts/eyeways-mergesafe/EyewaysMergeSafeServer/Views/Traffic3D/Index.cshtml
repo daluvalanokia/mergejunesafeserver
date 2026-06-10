@@ -166,6 +166,8 @@
 <script src="~/js/vehicleScene.js"></script>
 <script>
 // ── Server-side data ─────────────────────────────────────────────────────────
+// ── Detect arrival from simulation page ──────────────────────────────────
+var fromSimPage = (new URLSearchParams(window.location.search)).get('from') === 'sim';
 var highwayId = '@(Model.SelectedHighwayId ?? "")';
 
 var sensorData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
@@ -553,12 +555,33 @@ function initScene3D() {
     var lsb = document.getElementById('btnLoadScene');
     if (lsb) lsb.style.display = '';
 
-    // Auto-enter simulation mode if a simulation was already running in another tab
+    // Auto-enter simulation mode when arriving from simulation page or sim was active
     try {
-        if (localStorage.getItem('eyeways_sim_active') === 'true') {
-            setTimeout(function() { if (!animationPaused) toggleAnimation(); }, 500);
+        var simWasActive = localStorage.getItem('eyeways_sim_active') === 'true';
+        if (fromSimPage || simWasActive) {
+            // Step 1: Switch to sim-only feed (stop live polling, start sim polling)
+            if (liveEventInterval) { clearInterval(liveEventInterval); liveEventInterval = null; }
+            animationPaused = true;
+            var tb2 = document.getElementById('btnAnimToggle');
+            if (tb2) { tb2.innerHTML = '<i class="bi bi-play-fill me-1"></i>Resume'; tb2.className = 'btn btn-success btn-sm'; }
+            var feedTitle2 = document.getElementById('feedTitle');
+            var simBadge2  = document.getElementById('simModeBadge');
+            var liveBadge2 = document.getElementById('livePulseBadge');
+            if (feedTitle2) { feedTitle2.textContent = 'Simulation Feed'; feedTitle2.style.color = '#f59e0b'; }
+            if (simBadge2)  simBadge2.style.display = '';
+            if (liveBadge2) { liveBadge2.textContent = 'SIM ONLY'; liveBadge2.style.background = '#92400e'; }
+            // Step 2: Load already-saved sim records immediately into scene
+            setTimeout(function() {
+                loadSceneFromDB();
+                // Step 3: Also start live sim polling to catch new events as sim continues
+                lastSimPollTime = new Date(Date.now() - 60000).toISOString(); // look back 60s
+                if (!simEventInterval) {
+                    simEventInterval = setInterval(pollSimulationEvents, 3000);
+                }
+                pollSimulationEvents();
+            }, 400);
         }
-    } catch(e) {}
+    } catch(e) { console.error('sim auto-enter error', e); }
 
     // ── Click-to-inspect: raycaster setup ────────────────────────────────────
     raycaster3d = new THREE.Raycaster();
@@ -836,25 +859,40 @@ var FEED_EVENT_COLORS = {
 function loadSceneFromDB() {
     var url = '/api/events/scene?limit=100&highwayId=' + encodeURIComponent(highwayId);
     if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
+    var feedEl = document.getElementById('trafficFeed');
+    if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2"><i class="bi bi-hourglass-split me-2"></i>Loading simulation data…</p>';
     fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.events || !data.events.length) {
-                var feed = document.getElementById('trafficFeed');
-                if (feed) feed.innerHTML = '<p class="text-muted small p-2">No saved simulation records yet. Run a simulation first.</p>';
+                if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2">No saved simulation records yet. Run a simulation first, then return here.</p>';
                 return;
             }
-            // Clear current vehicles
+            // Clear current vehicles (keep only ambient non-event ones will be re-added)
             if (vehicles3d) { vehicles3d.forEach(function(v) { scene3d.remove(v); }); vehicles3d.length = 0; }
             feedItems3d.length = 0;
-            // Stagger spawn so vehicles appear animated
+            if (feedEl) feedEl.innerHTML = '';
+            var total = data.events.length;
+            // Stagger spawn so vehicles appear animated; track most-recent timestamp for follow-on polling
+            var latestTs = null;
             data.events.forEach(function(ev, i) {
+                if (!latestTs || ev.createdDate > latestTs) latestTs = ev.createdDate;
                 setTimeout(function() {
                     var spec = vehicleGetRandom(ev.vehicleType || null);
                     var grp  = spawnV(spec, true, ev.zoneId || '', true, ev);
                     pushFeed3d(grp, true, ev, true);
                 }, i * 80);
             });
+            // After all vehicles spawned, start continuous sim polling for new arrivals
+            setTimeout(function() {
+                // Set lastSimPollTime to the most recent event so we only pick up NEW ones
+                if (latestTs) lastSimPollTime = latestTs;
+                else lastSimPollTime = new Date(Date.now() - 5000).toISOString();
+                if (!simEventInterval) {
+                    simEventInterval = setInterval(pollSimulationEvents, 3000);
+                }
+                console.log('[3D] Loaded ' + total + ' sim records. Now polling for new events since ' + lastSimPollTime);
+            }, total * 80 + 200);
         })
         .catch(function(e) { console.error('loadSceneFromDB error', e); });
 }
@@ -993,8 +1031,14 @@ function showVehicleDetail(v, cx, cy) {
 (function() {
     function onSimStateChange(simStarted) {
         if (!scene3dInitialized) return;
-        if (simStarted && !animationPaused)  toggleAnimation();
-        if (!simStarted && animationPaused)  toggleAnimation();
+        if (simStarted) {
+            // Sim started in another tab: switch to sim mode and load/refresh data
+            if (!animationPaused) toggleAnimation();  // enters sim-only poll mode
+            setTimeout(loadSceneFromDB, 800);         // then load the actual DB records
+        } else {
+            // Sim stopped: resume live feed
+            if (animationPaused) toggleAnimation();
+        }
     }
     if (typeof BroadcastChannel !== 'undefined') {
         var bc = new BroadcastChannel('eyeways_sim');

@@ -121,7 +121,7 @@
                         </button>
                     </div>
                     <div class="d-flex gap-2 mb-3">
-                        <a href="/Traffic3D" id="btnView3D" class="btn btn-outline-info btn-sm flex-fill" title="Open 3D scene with saved simulation records">
+                        <a href="#" id="btnView3D" class="btn btn-outline-info btn-sm flex-fill" title="Open 3D scene with simulation data" onclick="openSimScene(); return false;">
                             <i class="bi bi-badge-3d me-1"></i>View as 3D Scene
                         </a>
                         <button class="btn btn-outline-secondary btn-sm flex-fill" onclick="clearSimLog()">
@@ -467,6 +467,15 @@ function appendSimLog(payloadStr, label, srcType) {
         var old = simLogItems.shift();
         if (old.parentNode) old.parentNode.removeChild(old);
     }
+}
+
+function openSimScene() {
+    var hwId = document.getElementById("simHighway").value || "";
+    // Set a flag so Traffic3D knows to auto-load sim data on arrival
+    try { localStorage.setItem("eyeways_sim_active", "true"); } catch(e) {}
+    try { localStorage.setItem("eyeways_sim_highway", hwId); } catch(e) {}
+    var url = "/Traffic3D?from=sim" + (hwId ? "&highwayId=" + encodeURIComponent(hwId) : "");
+    window.location.href = url;
 }
 
 function clearSimLog() {
