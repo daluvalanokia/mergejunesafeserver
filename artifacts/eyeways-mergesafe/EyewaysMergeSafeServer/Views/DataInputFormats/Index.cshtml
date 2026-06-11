@@ -322,10 +322,15 @@ else
     </div>
 }
 
-@section Scripts {
 @if (isSimTab)
 {
 <script>
+// ══════════════════════════════════════════════════════════════════════════
+// DataInputFormats — Simulation tab JS
+//   • Runs in its own browser tab (window.open from "View as 3D Scene")
+//   • Broadcasts sim_started/sim_stopped via BroadcastChannel + localStorage
+//   • doPost() result now returns vehicleId, vehicleType, direction for richer logging
+// ══════════════════════════════════════════════════════════════════════════
 var simRaw      = JSON.parse(document.getElementById('simData').textContent);
 var simZones    = simRaw.zones   || [];
 var simServers  = simRaw.servers || [];
@@ -336,8 +341,12 @@ var simLogItems = [];
 var eyewaysBroadcast = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('eyeways_sim') : null;
 
 function simBroadcast(type) {
-    if (eyewaysBroadcast) eyewaysBroadcast.postMessage({ type: type });
-    try { localStorage.setItem('eyeways_sim_active', type === 'sim_started' ? 'true' : 'false'); } catch(e) {}
+    var hwId = document.getElementById('simHighway').value || '';
+    if (eyewaysBroadcast) eyewaysBroadcast.postMessage({ type: type, highwayId: hwId });
+    try {
+        localStorage.setItem('eyeways_sim_active',  type === 'sim_started' ? 'true' : 'false');
+        localStorage.setItem('eyeways_sim_highway', hwId);
+    } catch(e) {}
 }
 
 function simFilterDropdowns() {
@@ -392,10 +401,10 @@ function startSim() {
         fetch('/DataInputFormats/SimulationPost', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
-            body: 'highwayId=' + encodeURIComponent(hwId) +
-                  '&zoneId='   + encodeURIComponent(zoneId) +
-                  '&serverId=' + encodeURIComponent(serverId) +
-                  '&sourceType=' + encodeURIComponent(srcType) +
+            body: 'highwayId='  + encodeURIComponent(hwId)     +
+                  '&zoneId='    + encodeURIComponent(zoneId)   +
+                  '&serverId='  + encodeURIComponent(serverId) +
+                  '&sourceType='+ encodeURIComponent(srcType)  +
                   '&__RequestVerificationToken=' + encodeURIComponent(tok)
         })
         .then(function(r){ return r.json(); })
@@ -404,10 +413,12 @@ function startSim() {
                 simTotal++;
                 document.getElementById('simTotalBadge').textContent = simTotal + ' posted';
                 setSimStatus('running', 'Running · ' + simTotal + ' posted · every ' + interval/1000 + 's');
-                appendSimLog(d.payload, d.label, srcType);
+                appendSimLog(d.payload, d.label, srcType, d);
+                // Re-broadcast so the 3D tab's delta-poll knows to keep polling
+                simBroadcast('sim_started');
             }
         })
-        .catch(function(e){ console.error(e); });
+        .catch(function(e){ console.error('SimulationPost error', e); });
     }
 
     simDelayTmr = setTimeout(function() {
@@ -435,19 +446,28 @@ function setSimStatus(state, msg) {
 }
 
 var typeColors = { physical: '#3b82f6', satellite: '#22c55e', telecom: '#f59e0b', tracker: '#a855f7' };
+var vtIcons    = { sedan:'🚗', suv:'🚙', truck:'🚛', motorcycle:'🏍️', van:'🚐' };
 
-function appendSimLog(payloadStr, label, srcType) {
-    var clr = typeColors[srcType] || '#64748b';
-    var now = new Date().toLocaleTimeString();
+function appendSimLog(payloadStr, label, srcType, resp) {
+    var clr      = typeColors[srcType] || '#64748b';
+    var now      = new Date().toLocaleTimeString();
+    var vt       = (resp && resp.vehicleType) || '';
+    var dir      = (resp && resp.direction)   || '';
+    var vid      = (resp && resp.vehicleId)   || '';
+    var icon     = vtIcons[vt] || '🚗';
     var safePayload = payloadStr.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    var safeForAttr = payloadStr.replace(/"/g, '&quot;');
+    var safeForAttr = payloadStr.replace(/"/g,'&quot;');
+    var dirLabel = dir==='N'?'↑N':dir==='S'?'↓S':dir==='E'?'→E':dir==='W'?'←W':dir||'';
 
     var item = document.createElement('div');
     item.className = 'mss-list-item';
     item.style.cssText = 'border-left:3px solid ' + clr + ';padding-left:10px';
     item.innerHTML =
         '<div class="d-flex justify-content-between align-items-center mb-1">' +
-          '<span class="small fw-semibold" style="color:' + clr + '">' + (label || srcType.toUpperCase()) + '</span>' +
+          '<span class="small fw-semibold" style="color:' + clr + '">' + icon + ' ' + (label || srcType.toUpperCase()) +
+            (vt   ? ' <span class="badge" style="background:rgba(255,255,255,.1);color:#e2e8f0;font-size:.58rem">' + vt + '</span>'    : '') +
+            (dirLabel ? ' <span class="badge bg-secondary" style="font-size:.58rem">' + dirLabel + '</span>' : '') +
+          '</span>' +
           '<div class="d-flex gap-1 align-items-center">' +
             '<span class="font-monospace text-muted" style="font-size:.6rem">' + now + '</span>' +
             '<button class="btn btn-outline-secondary btn-sm p-0 px-1" style="font-size:.65rem" ' +
@@ -455,6 +475,7 @@ function appendSimLog(payloadStr, label, srcType) {
               ' data-p="' + safeForAttr + '"><i class="bi bi-clipboard"></i></button>' +
           '</div>' +
         '</div>' +
+        (vid ? '<div class="font-monospace text-muted mb-1" style="font-size:.6rem">ID: ' + vid + '</div>' : '') +
         '<pre style="font-size:.62rem;max-height:110px;overflow-y:auto;background:rgba(255,255,255,.04);' +
           'border-radius:4px;padding:6px;margin:0;color:#94a3b8">' + safePayload + '</pre>';
 
@@ -470,13 +491,13 @@ function appendSimLog(payloadStr, label, srcType) {
 }
 
 function openSimScene() {
-    var hwId = document.getElementById("simHighway").value || "";
-    // Set a flag so Traffic3D knows to auto-load sim data on arrival
-    try { localStorage.setItem("eyeways_sim_active", "true"); } catch(e) {}
-    try { localStorage.setItem("eyeways_sim_highway", hwId); } catch(e) {}
-    var url = "/Traffic3D?from=sim" + (hwId ? "&highwayId=" + encodeURIComponent(hwId) : "");
-    // Open in a NEW TAB so the simulation timer keeps running in this tab
-    window.open(url, "_blank");
+    var hwId = document.getElementById('simHighway').value || '';
+    // Persist state for the new tab
+    try { localStorage.setItem('eyeways_sim_active',  simTimer ? 'true' : 'false'); } catch(e) {}
+    try { localStorage.setItem('eyeways_sim_highway', hwId); } catch(e) {}
+    var url = '/Traffic3D?from=sim' + (hwId ? '&highwayId=' + encodeURIComponent(hwId) : '');
+    // Open in a NEW TAB so the simulation timer keeps running in THIS tab
+    window.open(url, '_blank');
 }
 
 function clearSimLog() {
@@ -485,6 +506,8 @@ function clearSimLog() {
     simTotal = 0;
     document.getElementById('simTotalBadge').textContent = '0 posted';
     if (simTimer) setSimStatus('running', 'Running (log cleared)');
+}
+</script>
 }
 </script>
 }

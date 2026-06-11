@@ -165,10 +165,27 @@
         crossorigin="anonymous"></script>
 <script src="~/js/vehicleScene.js"></script>
 <script>
-// ── Server-side data ─────────────────────────────────────────────────────────
-// ── Detect arrival from simulation page ──────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Traffic3D — unified event loop
+//   • Live mode  : polls /api/events/live every 3s (ALL event types)
+//   • Sim mode   : snapshot load from /api/events/scene on entry,
+//                  then delta-polls /api/events/simulation every 3s
+//                  while the DataInputFormats tab keeps generating data
+//   • Cross-tab  : BroadcastChannel + localStorage keep the two tabs synced
+//   • No doubles : seenEventIds Set prevents re-rendering the same event
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Server-side data ─────────────────────────────────────────────────────
 var fromSimPage = (new URLSearchParams(window.location.search)).get('from') === 'sim';
-var highwayId = '@(Model.SelectedHighwayId ?? "")';
+var highwayId   = '@(Model.SelectedHighwayId ?? "")';
+// Prefer URL-supplied highway over localStorage
+(function() {
+    var urlHw = (new URLSearchParams(window.location.search)).get('highwayId');
+    if (urlHw) highwayId = urlHw;
+    else {
+        try { var lsHw = localStorage.getItem('eyeways_sim_highway'); if (lsHw) highwayId = lsHw; } catch(e) {}
+    }
+})();
 
 var sensorData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
     sensors.Where(s => s.Latitude.HasValue && s.Longitude.HasValue)
@@ -198,22 +215,32 @@ var serversByZone = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
                }).ToList()
            )));
 
-// ── Zone selection state ─────────────────────────────────────────────────────
-var selectedZoneId = '';
+// ── State ────────────────────────────────────────────────────────────────
+var selectedZoneId    = '';
+var animationPaused   = false;   // true = sim mode, false = live mode
+var scene3dInitialized = false;
 
+var lastPollTime      = new Date(Date.now() - 30000).toISOString();  // live cursor
+var lastSimPollTime   = new Date().toISOString();                     // sim delta cursor
+var sceneLoadPending  = false;   // guard: prevent concurrent loadSceneFromDB calls
+var seenEventIds      = new Set(); // dedup guard across all polls
+var feedItems3d       = [];
+
+var liveEventInterval = null;
+var simEventInterval  = null;
+
+// ── Zone selection ───────────────────────────────────────────────────────
 function selectZone(zoneId) {
     selectedZoneId = zoneId || '';
-    // Sync dropdowns
     document.getElementById('zoneFilterSelect').value = selectedZoneId;
     var ss = document.getElementById('serverFilterSelect');
     if (ss) ss.value = selectedZoneId ? selectedZoneId : '';
 
-    // Highlight zone list items
     document.querySelectorAll('.zone-list-item').forEach(function(el) {
         var active = el.dataset.zoneId === selectedZoneId;
-        el.style.background    = active ? 'rgba(59,130,246,.15)'  : '';
-        el.style.borderLeft    = active ? '3px solid #3b82f6'     : '3px solid transparent';
-        el.style.paddingLeft   = active ? '9px'                   : '';
+        el.style.background  = active ? 'rgba(59,130,246,.15)' : '';
+        el.style.borderLeft  = active ? '3px solid #3b82f6'    : '3px solid transparent';
+        el.style.paddingLeft = active ? '9px'                  : '';
     });
 
     updateMapHighlight(selectedZoneId);
@@ -221,18 +248,22 @@ function selectZone(zoneId) {
     updateFeedTitle(selectedZoneId);
     updateSceneZoneLabel(selectedZoneId);
 
-    // Reset poll time so new zone events load immediately
-    lastPollTime = new Date().toISOString();
-    if (scene3dInitialized) pollLiveEvents();
+    // Refresh feed immediately for the new zone
+    if (scene3dInitialized) {
+        if (animationPaused) {
+            // Reload sim scene for this zone
+            seenEventIds.clear();
+            loadSceneFromDB();
+        } else {
+            lastPollTime = new Date(Date.now() - 30000).toISOString();
+            pollLiveEvents();
+        }
+    }
 }
 
-function selectZoneByServer(zoneId) {
-    // Show the map first so the fly-to zoom is visible, then filter
-    setMode('map');
-    selectZone(zoneId);
-}
+function selectZoneByServer(zoneId) { setMode('map'); selectZone(zoneId); }
 
-// ── Leaflet map ──────────────────────────────────────────────────────────────
+// ── Leaflet map ──────────────────────────────────────────────────────────
 var mapCenter = zoneData.length > 0 ? [zoneData[0].lat, zoneData[0].lon] : [32.7767, -96.7970];
 var map = L.map('leafletMap').setView(mapCenter, 10);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution:'© OSM, CARTO' }).addTo(map);
@@ -242,201 +273,142 @@ sensorData.forEach(function(s) {
     L.circleMarker([s.lat, s.lon], {radius:5, color:color, fillColor:color, fillOpacity:0.9})
         .bindPopup('<b>'+s.deviceName+'</b><br>'+s.deviceType+'<br>'+s.status).addTo(map);
 });
-
-// Highway polyline — connect zones in order to show the route
 if (zoneData.length > 1) {
     L.polyline(zoneData.map(function(z){ return [z.lat, z.lon]; }),
-        { color: '#3b82f6', weight: 4, opacity: 0.42, dashArray: '10 6' }).addTo(map);
+        { color:'#3b82f6', weight:4, opacity:0.42, dashArray:'10 6' }).addTo(map);
 }
 
-// Draw zone circles and keep refs for highlight updates
 var mapZoneRefs = [];
 zoneData.forEach(function(z) {
     var base = z.status === 'fault' ? '#ef4444' : '#22c55e';
-    var circle = L.circle([z.lat, z.lon], {radius: z.r || 500, color: base, fillColor: base, fillOpacity: 0.12, weight: 2})
-        .addTo(map);
-    var marker = L.circleMarker([z.lat, z.lon], {radius: 10, color: base, fillColor: base, fillOpacity: 0.95, weight: 2})
-        .bindPopup(
-            '<div style="min-width:150px">' +
-            '<b style="font-size:.85rem">' + z.zoneName + '</b>' +
-            ' <span style="font-size:.7rem;color:' + base + '">● ' + z.status + '</span>' +
-            '<br><code style="font-size:.68rem;color:#94a3b8">' + z.zoneId + '</code>' +
-            '<br><a href="#" onclick="selectZone(\'' + z.zoneId + '\');return false;" ' +
-                'style="font-size:.75rem;color:#60a5fa">Filter to this zone →</a>' +
-            '</div>')
-        .bindTooltip(z.zoneName, { permanent: true, direction: 'top', offset: [0, -14], className: 'mss-zone-tooltip' })
+    var circle = L.circle([z.lat, z.lon], {radius: z.r || 500, color: base, fillColor: base, fillOpacity: 0.12, weight: 2}).addTo(map);
+    var marker = L.circleMarker([z.lat, z.lon], {radius:10, color:base, fillColor:base, fillOpacity:0.95, weight:2})
+        .bindPopup('<div style="min-width:150px"><b style="font-size:.85rem">'+z.zoneName+'</b>'+
+            ' <span style="font-size:.7rem;color:'+base+'">● '+z.status+'</span>'+
+            '<br><code style="font-size:.68rem;color:#94a3b8">'+z.zoneId+'</code>'+
+            '<br><a href="#" onclick="selectZone(\''+z.zoneId+'\');return false;" style="font-size:.75rem;color:#60a5fa">Filter to this zone →</a></div>')
+        .bindTooltip(z.zoneName, {permanent:true,direction:'top',offset:[0,-14],className:'mss-zone-tooltip'})
         .on('click', function() { selectZone(z.zoneId); })
         .addTo(map);
-    mapZoneRefs.push({ zoneId: z.zoneId, zoneName: z.zoneName, circle: circle, marker: marker, base: base, lat: z.lat, lon: z.lon });
+    mapZoneRefs.push({zoneId:z.zoneId,zoneName:z.zoneName,circle:circle,marker:marker,base:base,lat:z.lat,lon:z.lon});
 });
 
 function updateMapHighlight(zoneId) {
     mapZoneRefs.forEach(function(ref) {
         var sel = zoneId && ref.zoneId === zoneId;
-        ref.circle.setStyle({
-            color:       sel ? '#f59e0b' : ref.base,
-            fillOpacity: sel ? 0.22      : 0.1,
-            weight:      sel ? 3         : 1
-        });
-        ref.marker.setStyle({
-            color:       sel ? '#f59e0b' : ref.base,
-            fillColor:   sel ? '#f59e0b' : ref.base,
-            radius:      sel ? 13        : 8
-        });
-        if (sel) map.flyTo([ref.lat, ref.lon], 12, { duration: 0.8 });
+        ref.circle.setStyle({color:sel?'#f59e0b':ref.base,fillOpacity:sel?0.22:0.1,weight:sel?3:1});
+        ref.marker.setStyle({color:sel?'#f59e0b':ref.base,fillColor:sel?'#f59e0b':ref.base,radius:sel?13:8});
+        if (sel) map.flyTo([ref.lat,ref.lon],12,{duration:0.8});
     });
     var label = document.getElementById('mapZoneLabel');
     if (zoneId) {
-        var z = zoneData.find(function(z) { return z.zoneId === zoneId; });
-        label.textContent = z ? z.zoneName : zoneId;
-        label.style.display = '';
-    } else {
-        label.style.display = 'none';
-        if (zoneData.length) map.flyTo(mapCenter, 10, { duration: 0.8 });
-    }
+        var z = zoneData.find(function(z){return z.zoneId===zoneId;});
+        label.textContent = z ? z.zoneName : zoneId; label.style.display = '';
+    } else { label.style.display='none'; if(zoneData.length) map.flyTo(mapCenter,10,{duration:0.8}); }
 }
 
 loadSegments();
 function loadSegments() {
-    fetch('/Traffic3D/GetTrafficSegments?highwayId=' + encodeURIComponent(highwayId))
-        .then(function(r) { return r.json(); })
-        .then(renderSegFeed)
-        .catch(function() { renderSegFeed({ segments: [] }); });
+    fetch('/Traffic3D/GetTrafficSegments?highwayId='+encodeURIComponent(highwayId))
+        .then(function(r){return r.json();}).then(renderSegFeed).catch(function(){renderSegFeed({segments:[]});});
 }
 function renderSegFeed(data) {
-    var segs = (data.segments || []);
+    var segs = data.segments || [];
     if (!segs.length) return;
-    var cm = { free: '#22c55e', moderate: '#f59e0b', heavy: '#ef4444' };
-    var feed = document.getElementById('trafficFeed');
-    feed.innerHTML = segs.map(function(s) {
-        var c = cm[s.congestion] || '#64748b';
-        return '<div class="mss-list-item d-flex justify-content-between align-items-center">' +
-            '<span class="small fw-semibold" style="color:'+c+'">'+s.name+'</span>' +
-            '<span class="small text-muted">'+s.speedMph+' mph</span></div>';
+    var cm = {free:'#22c55e',moderate:'#f59e0b',heavy:'#ef4444'};
+    document.getElementById('trafficFeed').innerHTML = segs.map(function(s){
+        var c = cm[s.congestion]||'#64748b';
+        return '<div class="mss-list-item d-flex justify-content-between align-items-center">'+
+               '<span class="small fw-semibold" style="color:'+c+'">'+s.name+'</span>'+
+               '<span class="small text-muted">'+s.speedMph+' mph</span></div>';
     }).join('');
 }
 
-// ── Zone detail panel ────────────────────────────────────────────────────────
+// ── Zone detail panel ────────────────────────────────────────────────────
 function updateZoneDetailPanel(zoneId) {
     var card  = document.getElementById('zoneDetailCard');
     var title = document.getElementById('zoneDetailTitle');
     var badge = document.getElementById('zoneDetailBadge');
     var list  = document.getElementById('zoneServerList');
-
-    if (!zoneId) { card.style.display = 'none'; return; }
-
-    var zone    = zoneData.find(function(z) { return z.zoneId === zoneId; });
+    if (!zoneId) { card.style.display='none'; return; }
+    var zone    = zoneData.find(function(z){return z.zoneId===zoneId;});
     var srvList = serversByZone[zoneId] || [];
-    card.style.display = '';
-    title.textContent  = zone ? zone.zoneName : zoneId;
-    badge.textContent  = zone ? zone.status : '';
-    badge.className    = 'mss-badge mss-badge--' + (zone ? zone.status : 'active');
-
-    if (!srvList.length) {
-        list.innerHTML = '<p class="text-muted small p-2">No servers assigned to this zone.</p>';
-        return;
-    }
-    list.innerHTML = srvList.map(function(s) {
-        var dot = s.status === 'online' ? '#22c55e' : s.status === 'fault' ? '#ef4444' : '#f59e0b';
-        return '<div class="mss-list-item d-flex justify-content-between align-items-center">' +
-            '<div>' +
-            '<div class="small fw-semibold">' + s.serverName + '</div>' +
-            '<div class="font-monospace text-muted" style="font-size:.63rem">' +
-                (s.ipAddress || '—') + ':' + s.port +
-            '</div>' +
-            '</div>' +
-            '<span class="mss-badge mss-badge--' + s.status + '">' + s.status + '</span>' +
-            '</div>';
+    card.style.display=''; title.textContent=zone?zone.zoneName:zoneId;
+    badge.textContent=zone?zone.status:''; badge.className='mss-badge mss-badge--'+(zone?zone.status:'active');
+    if (!srvList.length) { list.innerHTML='<p class="text-muted small p-2">No servers assigned to this zone.</p>'; return; }
+    list.innerHTML = srvList.map(function(s){
+        var dot=s.status==='online'?'#22c55e':s.status==='fault'?'#ef4444':'#f59e0b';
+        return '<div class="mss-list-item d-flex justify-content-between align-items-center">'+
+               '<div><div class="small fw-semibold">'+s.serverName+'</div>'+
+               '<div class="font-monospace text-muted" style="font-size:.63rem">'+(s.ipAddress||'—')+':'+s.port+'</div></div>'+
+               '<span class="mss-badge mss-badge--'+s.status+'">'+s.status+'</span></div>';
     }).join('');
 }
-
 function updateFeedTitle(zoneId) {
-    var title = document.getElementById('feedTitle');
-    if (zoneId) {
-        var z = zoneData.find(function(z) { return z.zoneId === zoneId; });
-        title.textContent = (z ? z.zoneName : zoneId) + ' Feed';
-    } else {
-        title.textContent = 'Live Feed';
-    }
+    var title=document.getElementById('feedTitle');
+    if(zoneId){var z=zoneData.find(function(z){return z.zoneId===zoneId;});title.textContent=(z?z.zoneName:zoneId)+' Feed';}
+    else{title.textContent=animationPaused?'Simulation Feed':'Live Feed';}
 }
-
 function updateSceneZoneLabel(zoneId) {
-    var overlay = document.getElementById('zoneOverlay');
-    var nameEl  = document.getElementById('overlayZoneName');
-    var scLabel = document.getElementById('scene3dZoneLabel');
-    if (zoneId) {
-        var z = zoneData.find(function(z) { return z.zoneId === zoneId; });
-        var name = z ? z.zoneName : zoneId;
-        nameEl.textContent   = name;
-        overlay.style.display = '';
-        scLabel.textContent  = name;
-        scLabel.style.display = '';
-    } else {
-        overlay.style.display = 'none';
-        scLabel.style.display = 'none';
-    }
+    var overlay=document.getElementById('zoneOverlay'),nameEl=document.getElementById('overlayZoneName'),scLabel=document.getElementById('scene3dZoneLabel');
+    if(zoneId){var z=zoneData.find(function(z){return z.zoneId===zoneId;});var name=z?z.zoneName:zoneId;
+    nameEl.textContent=name;overlay.style.display='';scLabel.textContent=name;scLabel.style.display='';}
+    else{overlay.style.display='none';scLabel.style.display='none';}
 }
 
-// ── Animation play/pause ─────────────────────────────────────────────────────
-var animationPaused = false;
-function toggleAnimation() {
-    closeVehicleDetail();
-    if (!animationPaused) {
-        enterSimMode();
-    } else {
-        exitSimMode();
-    }
-}
-
-// ── Mode toggle ──────────────────────────────────────────────────────────────
-var scene3dInitialized = false;
+// ── Mode toggle ───────────────────────────────────────────────────────────
 function setMode(m) {
-    document.getElementById('mapPanel').style.display     = m === 'map' ? '' : 'none';
-    document.getElementById('scene3dPanel').style.display = m === '3d'  ? '' : 'none';
-    document.getElementById('btnMap').className = m === 'map' ? 'btn btn-primary btn-sm' : 'btn btn-outline-secondary btn-sm';
-    document.getElementById('btn3d').className  = m === '3d'  ? 'btn btn-primary btn-sm' : 'btn btn-outline-secondary btn-sm';
+    var mapP   = document.getElementById('mapPanel');
+    var sc3dP  = document.getElementById('scene3dPanel');
+    var btnMap = document.getElementById('btnMap');
+    var btn3d  = document.getElementById('btn3d');
 
     if (m === '3d') {
+        mapP.style.display   = 'none';
+        sc3dP.style.display  = '';
+        btnMap.className     = 'btn btn-outline-secondary btn-sm';
+        btn3d.className      = 'btn btn-primary btn-sm';
         if (!scene3dInitialized) {
             initScene3D();
         } else {
-            // Already running — flush feed and immediately re-poll for current zone
+            // Already running — reset feed for the current zone/mode
+            seenEventIds.clear();
             feedItems3d = [];
-            var zLabel = selectedZoneId
-                ? (zoneData.find(function(z) { return z.zoneId === selectedZoneId; }) || {}).zoneName || selectedZoneId
-                : null;
-            document.getElementById('trafficFeed').innerHTML =
-                '<p class="text-muted small p-2">' +
-                (zLabel ? 'Loading feed for <strong>' + zLabel + '</strong>…' : 'Refreshing live feed…') +
-                '</p>';
+            var feedEl = document.getElementById('trafficFeed');
+            if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2">Refreshing…</p>';
             lastPollTime = new Date(Date.now() - 30000).toISOString();
-            pollLiveEvents();
+            if (!animationPaused) pollLiveEvents();
         }
         updateSceneZoneLabel(selectedZoneId);
     }
-
     if (m === 'map') {
-        // Returning to map — restore segment feed if no live items yet
+        mapP.style.display  = '';
+        sc3dP.style.display = 'none';
+        btnMap.className    = 'btn btn-primary btn-sm';
+        btn3d.className     = 'btn btn-outline-secondary btn-sm';
         updateFeedTitle(selectedZoneId);
         if (!feedItems3d.length) loadSegments();
     }
 }
 
-// ── Three.js Scene3D ─────────────────────────────────────────────────────────
-var speedMult = 1, density = 10, camAngleVal = 45;
-var renderer3d, camera3d, scene3d, vehicles3d = [];
-var raycaster3d = null, mouse3d = null, selectedVehicle3d = null;
+// ── Play/pause toggle (sim mode on/off) ───────────────────────────────────
+function toggleAnimation() {
+    closeVehicleDetail();
+    if (!animationPaused) enterSimMode();
+    else exitSimMode();
+}
+
+// ── Three.js scene ────────────────────────────────────────────────────────
+var speedMult=1, density=10, camAngleVal=45;
+var renderer3d, camera3d, scene3d, vehicles3d=[];
+var raycaster3d=null, mouse3d=null, selectedVehicle3d=null;
 
 function setCamAngle(v) {
-    camAngleVal = parseFloat(v);
-    if (camera3d) {
-        var d = 35, rad = camAngleVal * Math.PI / 180;
-        camera3d.position.set(0, Math.sin(rad) * d, Math.cos(rad) * d);
-        camera3d.lookAt(0, 0, 0);
-    }
+    camAngleVal=parseFloat(v);
+    if(camera3d){var d=35,rad=camAngleVal*Math.PI/180;camera3d.position.set(0,Math.sin(rad)*d,Math.cos(rad)*d);camera3d.lookAt(0,0,0);}
 }
-function setSpeedMult(v) { speedMult = parseFloat(v); }
-function setDensity(v)   { density   = parseInt(v);   }
+function setSpeedMult(v){speedMult=parseFloat(v);}
+function setDensity(v){density=parseInt(v);}
 
 function initScene3D() {
     scene3dInitialized = true;
@@ -447,603 +419,460 @@ function initScene3D() {
     scene3d.background = new THREE.Color(0x0a0f1a);
     scene3d.fog = new THREE.FogExp2(0x0a0f1a, 0.016);
 
-    camera3d = new THREE.PerspectiveCamera(45, W / H, 0.1, 500);
-    camera3d.position.set(0, 22, 28);
-    camera3d.lookAt(0, 0, 0);
+    camera3d = new THREE.PerspectiveCamera(45, W/H, 0.1, 500);
+    camera3d.position.set(0, 22, 28); camera3d.lookAt(0,0,0);
 
-    renderer3d = new THREE.WebGLRenderer({ antialias: true });
-    renderer3d.setSize(W, H);
-    renderer3d.setPixelRatio(window.devicePixelRatio);
-    renderer3d.shadowMap.enabled = true;
+    renderer3d = new THREE.WebGLRenderer({antialias:true});
+    renderer3d.setSize(W,H); renderer3d.setPixelRatio(window.devicePixelRatio);
+    renderer3d.shadowMap.enabled=true;
     container.appendChild(renderer3d.domElement);
 
-    scene3d.add(new THREE.AmbientLight(0x334466, 2));
-    var dir = new THREE.DirectionalLight(0x8899ff, 2.5);
-    dir.position.set(10, 20, 10); dir.castShadow = true;
-    scene3d.add(dir);
+    scene3d.add(new THREE.AmbientLight(0x334466,2));
+    var dir=new THREE.DirectionalLight(0x8899ff,2.5);
+    dir.position.set(10,20,10);dir.castShadow=true;scene3d.add(dir);
 
-    // Ground
-    var gnd = new THREE.Mesh(new THREE.PlaneGeometry(120, 120),
-        new THREE.MeshLambertMaterial({ color: 0x050a12 }));
-    gnd.rotation.x = -Math.PI / 2; gnd.receiveShadow = true;
-    scene3d.add(gnd);
+    var gnd=new THREE.Mesh(new THREE.PlaneGeometry(120,120),new THREE.MeshLambertMaterial({color:0x050a12}));
+    gnd.rotation.x=-Math.PI/2;gnd.receiveShadow=true;scene3d.add(gnd);
+    var road=new THREE.Mesh(new THREE.PlaneGeometry(14,80),new THREE.MeshLambertMaterial({color:0x1a2035}));
+    road.rotation.x=-Math.PI/2;road.position.y=0.02;road.receiveShadow=true;scene3d.add(road);
+    var med=new THREE.Mesh(new THREE.PlaneGeometry(0.4,80),new THREE.MeshLambertMaterial({color:0x2a3a55}));
+    med.rotation.x=-Math.PI/2;med.position.y=0.025;scene3d.add(med);
+    for(var zi=-36;zi<37;zi+=6){[-5,-3,3,5].forEach(function(xl){
+        var lm=new THREE.Mesh(new THREE.PlaneGeometry(0.12,3),new THREE.MeshBasicMaterial({color:Math.abs(xl)===5?0xffffff:0xffff00}));
+        lm.rotation.x=-Math.PI/2;lm.position.set(xl,0.03,zi);scene3d.add(lm);
+    });}
+    [-7.2,7.2].forEach(function(cx){
+        var curb=new THREE.Mesh(new THREE.BoxGeometry(0.25,0.12,80),new THREE.MeshLambertMaterial({color:0x2c3a52}));
+        curb.position.set(cx,0.06,0);scene3d.add(curb);
+    });
 
-    // Road (6 lanes total — 3 each direction)
-    var road = new THREE.Mesh(new THREE.PlaneGeometry(14, 80),
-        new THREE.MeshLambertMaterial({ color: 0x1a2035 }));
-    road.rotation.x = -Math.PI / 2; road.position.y = 0.02; road.receiveShadow = true;
-    scene3d.add(road);
+    vehicles3d=[];
+    for(var vi=0;vi<density;vi++) spawnV();
+    animate3d();
 
-    // Median
-    var med = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 80),
-        new THREE.MeshLambertMaterial({ color: 0x2a3a55 }));
-    med.rotation.x = -Math.PI / 2; med.position.y = 0.025;
-    scene3d.add(med);
+    // Start live polling
+    startLivePolling();
 
-    // Lane markers
-    for (var zi = -36; zi < 37; zi += 6) {
-        [-5, -3, 3, 5].forEach(function(xl) {
-            var lm = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 3),
-                new THREE.MeshBasicMaterial({ color: Math.abs(xl) === 5 ? 0xffffff : 0xffff00 }));
-            lm.rotation.x = -Math.PI / 2; lm.position.set(xl, 0.03, zi);
-            scene3d.add(lm);
-        });
+    var tb=document.getElementById('btnAnimToggle');
+    if(tb){tb.style.display='';animationPaused=false;}
+    var lsb=document.getElementById('btnLoadScene');
+    if(lsb) lsb.style.display='';
+
+    // Auto-enter sim mode if we arrived from the simulation page
+    if (fromSimPage || getSimActive()) {
+        setTimeout(enterSimMode, 800);
     }
 
-    // Curbs
-    [-7.2, 7.2].forEach(function(cx) {
-        var curb = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.12, 80),
-            new THREE.MeshLambertMaterial({ color: 0x2c3a52 }));
-        curb.position.set(cx, 0.06, 0);
-        scene3d.add(curb);
-    });
-
-    vehicles3d = [];
-    for (var vi = 0; vi < density; vi++) spawnV();
-    animate3d();
-    startEventPolling();
-
-    var tb = document.getElementById('btnAnimToggle');
-    if (tb) { tb.style.display = ''; animationPaused = false; }
-    var lsb = document.getElementById('btnLoadScene');
-    if (lsb) lsb.style.display = '';
-
-    // Auto-enter simulation mode when arriving from simulation page or sim was active
-    try {
-        var simWasActive = localStorage.getItem('eyeways_sim_active') === 'true';
-        if (fromSimPage || simWasActive) {
-            // Ensure the 3D scene is visible and initialized FIRST, then load sim data
-            setMode('3d');
-            // Give initScene3D() time to finish building the WebGL canvas
-            setTimeout(enterSimMode, 600);
-        }
-    } catch(e) { console.error('sim auto-enter error', e); }
-
-    // ── Click-to-inspect: raycaster setup ────────────────────────────────────
-    raycaster3d = new THREE.Raycaster();
-    mouse3d     = new THREE.Vector2();
-
-    // Build the floating detail panel inside the canvas container
-    var vpanel = document.createElement('div');
-    vpanel.id = 'vehicleDetailPanel';
-    vpanel.style.cssText =
-        'display:none;position:absolute;top:0;left:0;z-index:20;width:300px;' +
-        'background:rgba(8,12,24,.97);border:1px solid rgba(255,255,255,.14);' +
-        'border-radius:10px;backdrop-filter:blur(8px);' +
-        'box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;';
-    vpanel.innerHTML =
-        '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.09);' +
-            'display:flex;justify-content:space-between;align-items:center">' +
-            '<span id="vdTitle" style="font-size:.8rem;font-weight:700;color:#e2e8f0;' +
-                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px"></span>' +
-            '<button id="vdClose" style="background:none;border:none;color:#94a3b8;' +
-                'font-size:1.1rem;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0">' +
-                '×</button>' +
-        '</div>' +
-        '<div style="display:flex;border-bottom:1px solid rgba(255,255,255,.07)">' +
-            '<button id="vdTabFmt" onclick="vdSwitchTab(\'fmt\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:rgba(59,130,246,.18);border:none;color:#60a5fa;cursor:pointer">' +
-                'Formatted</button>' +
-            '<button id="vdTabRaw" onclick="vdSwitchTab(\'raw\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:transparent;border:none;color:#64748b;cursor:pointer">' +
-                'Raw JSON</button>' +
-        '</div>' +
-        '<div id="vdBodyFmt" style="padding:10px 12px;max-height:240px;overflow-y:auto"></div>' +
-        '<div id="vdBodyRaw" style="display:none;padding:10px 12px;max-height:240px;overflow-y:auto">' +
-            '<pre id="vdRawPre" style="font-size:.6rem;color:#94a3b8;white-space:pre-wrap;' +
-                'word-break:break-all;margin:0;line-height:1.5"></pre>' +
-        '</div>';
+    // Click-to-inspect
+    raycaster3d=new THREE.Raycaster();mouse3d=new THREE.Vector2();
+    var vpanel=document.createElement('div');
+    vpanel.id='vehicleDetailPanel';
+    vpanel.style.cssText='display:none;position:absolute;top:0;left:0;z-index:20;width:300px;'+
+        'background:rgba(8,12,24,.97);border:1px solid rgba(255,255,255,.14);'+
+        'border-radius:10px;backdrop-filter:blur(8px);box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;';
+    vpanel.innerHTML=
+        '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.09);display:flex;justify-content:space-between;align-items:center">'+
+        '<span id="vdTitle" style="font-size:.8rem;font-weight:700;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px"></span>'+
+        '<button id="vdClose" style="background:none;border:none;color:#94a3b8;font-size:1.1rem;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0">×</button></div>'+
+        '<div style="display:flex;border-bottom:1px solid rgba(255,255,255,.07)">'+
+        '<button id="vdTabFmt" onclick="vdSwitchTab(\'fmt\')" style="flex:1;padding:5px;font-size:.7rem;font-weight:600;background:rgba(59,130,246,.18);border:none;color:#60a5fa;cursor:pointer">Formatted</button>'+
+        '<button id="vdTabRaw" onclick="vdSwitchTab(\'raw\')" style="flex:1;padding:5px;font-size:.7rem;font-weight:600;background:transparent;border:none;color:#64748b;cursor:pointer">Raw JSON</button></div>'+
+        '<div id="vdBodyFmt" style="padding:10px 12px;max-height:240px;overflow-y:auto"></div>'+
+        '<div id="vdBodyRaw" style="display:none;padding:10px 12px;max-height:240px;overflow-y:auto">'+
+        '<pre id="vdRawPre" style="font-size:.6rem;color:#94a3b8;white-space:pre-wrap;word-break:break-all;margin:0;line-height:1.5"></pre></div>';
     container.appendChild(vpanel);
-    vpanel.addEventListener('click', function(e) { e.stopPropagation(); });
-    document.getElementById('vdClose').addEventListener('click', closeVehicleDetail);
+    vpanel.addEventListener('click',function(e){e.stopPropagation();});
+    document.getElementById('vdClose').addEventListener('click',closeVehicleDetail);
 
-    // Hover: change cursor when over a vehicle
-    container.addEventListener('mousemove', function(e) {
-        if (!raycaster3d || !camera3d) return;
-        var rect = renderer3d.domElement.getBoundingClientRect();
-        mouse3d.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-        mouse3d.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-        raycaster3d.setFromCamera(mouse3d, camera3d);
-        var hits = raycaster3d.intersectObjects(vehicles3d, true);
-        container.style.cursor = hits.length ? 'pointer' : '';
+    container.addEventListener('mousemove',function(e){
+        if(!raycaster3d||!camera3d)return;
+        var rect=renderer3d.domElement.getBoundingClientRect();
+        mouse3d.x=((e.clientX-rect.left)/rect.width)*2-1;
+        mouse3d.y=-((e.clientY-rect.top)/rect.height)*2+1;
+        raycaster3d.setFromCamera(mouse3d,camera3d);
+        container.style.cursor=raycaster3d.intersectObjects(vehicles3d,true).length?'pointer':'';
     });
-
-    // Click: pick vehicle and show detail panel
-    container.addEventListener('click', function(e) {
-        var panel = document.getElementById('vehicleDetailPanel');
-        if (panel && panel.contains(e.target)) return;
-        if (!raycaster3d || !camera3d) return;
-        var rect = renderer3d.domElement.getBoundingClientRect();
-        mouse3d.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-        mouse3d.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-        raycaster3d.setFromCamera(mouse3d, camera3d);
-        var hits = raycaster3d.intersectObjects(vehicles3d, true);
-        if (!hits.length) { closeVehicleDetail(); return; }
-        var obj = hits[0].object;
-        while (obj.parent && vehicles3d.indexOf(obj) < 0) obj = obj.parent;
-        if (vehicles3d.indexOf(obj) < 0) { closeVehicleDetail(); return; }
-        showVehicleDetail(obj, e.clientX, e.clientY);
+    container.addEventListener('click',function(e){
+        var panel=document.getElementById('vehicleDetailPanel');
+        if(panel&&panel.contains(e.target))return;
+        if(!raycaster3d||!camera3d)return;
+        var rect=renderer3d.domElement.getBoundingClientRect();
+        mouse3d.x=((e.clientX-rect.left)/rect.width)*2-1;
+        mouse3d.y=-((e.clientY-rect.top)/rect.height)*2+1;
+        raycaster3d.setFromCamera(mouse3d,camera3d);
+        var hits=raycaster3d.intersectObjects(vehicles3d,true);
+        if(!hits.length){closeVehicleDetail();return;}
+        var obj=hits[0].object;
+        while(obj.parent&&vehicles3d.indexOf(obj)<0)obj=obj.parent;
+        if(vehicles3d.indexOf(obj)<0){closeVehicleDetail();return;}
+        showVehicleDetail(obj,e.clientX,e.clientY);
     });
-
-    // Keyboard dismiss
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') closeVehicleDetail();
-    });
-
-    // Outside-page dismiss: clicking sidebar, header, or any element outside the canvas container
-    document.addEventListener('click', function(e) {
-        var panel = document.getElementById('vehicleDetailPanel');
-        if (!panel || panel.style.display === 'none') return;
-        var cont = document.getElementById('scene3dContainer');
-        if (cont && !cont.contains(e.target)) closeVehicleDetail();
-    }, true);
-
-    window.addEventListener('resize', function() {
-        if (!renderer3d) return;
-        var W2 = container.clientWidth, H2 = container.clientHeight;
-        renderer3d.setSize(W2, H2);
-        camera3d.aspect = W2 / H2;
-        camera3d.updateProjectionMatrix();
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')closeVehicleDetail();});
+    document.addEventListener('click',function(e){
+        var panel=document.getElementById('vehicleDetailPanel');
+        if(!panel||panel.style.display==='none')return;
+        var cont=document.getElementById('scene3dContainer');
+        if(cont&&!cont.contains(e.target))closeVehicleDetail();
+    },true);
+    window.addEventListener('resize',function(){
+        if(!renderer3d)return;
+        var W2=container.clientWidth,H2=container.clientHeight;
+        renderer3d.setSize(W2,H2);camera3d.aspect=W2/H2;camera3d.updateProjectionMatrix();
     });
 }
 
-// ── Vehicle spawning ─────────────────────────────────────────────────────────
-
+// ── Vehicle spawning ─────────────────────────────────────────────────────
 function spawnV(vSpec, fromEvent, zoneId, isSimulation, ev) {
-    if (!vSpec) vSpec = vehicleGetRandom(ev && ev.vehicleType ? ev.vehicleType : null);
-    var group = vehicleBuildMesh(vSpec);
-    // Use cardinal direction from event if available, otherwise assign by lane
-    var cardinal  = ev && ev.direction ? ev.direction : null;
-    var lanePool  = cardinal === 'N' ? [-4,-2] : cardinal === 'S' ? [2,4]
-                  : cardinal === 'E' ? [2,4]   : cardinal === 'W' ? [-4,-2]
-                  : [-4,-2,2,4];
-    var lane      = lanePool[Math.floor(Math.random() * lanePool.length)];
-    if (!cardinal) cardinal = lane < 0 ? 'N' : 'S';
-    group.position.set(lane, 0, (Math.random() * 80) - 40);
-    // Rotate mesh to face correct direction
-    var rotY = cardinal === 'N' ? Math.PI : cardinal === 'S' ? 0
-             : cardinal === 'E' ? -Math.PI/2 : Math.PI/2;
-    group.rotation.y = rotY;
-    group.userData = {
-        speed:        ev && ev.speedMph ? ev.speedMph * 0.012 : (25 + Math.random() * 55) * 0.012,
-        dir:          cardinal === 'N' || cardinal === 'W' ? -1 : 1,
-        cardinal:     cardinal,
-        lane:         lane,
-        type:         vSpec.type,
-        make:         vSpec.make,
-        model:        vSpec.model,
-        icon:         vSpec.icon,
-        zoneId:       zoneId || '',
-        fromEvent:    fromEvent || false,
-        isSimulation: isSimulation || false,
-        evPayload:    ev ? (ev.payload    || '') : '',
-        evEventType:  ev ? (ev.eventType  || '') : '',
-        evVehicleId:  ev ? (ev.vehicleId  || '') : '',
-        evDeviceId:   ev ? (ev.deviceId   || '') : '',
-        evHighwayId:  ev ? (ev.highwayId  || '') : '',
-        evLatitude:   ev ? (ev.latitude   || null) : null,
-        evLongitude:  ev ? (ev.longitude  || null) : null,
-        evCreatedDate:ev ? (ev.createdDate|| '') : '',
-        evZoneId:     ev ? (ev.zoneId     || '') : ''
+    if(!vSpec) vSpec=vehicleGetRandom(ev&&ev.vehicleType?ev.vehicleType:null);
+    var group=vehicleBuildMesh(vSpec);
+    var cardinal=ev&&ev.direction?ev.direction:null;
+    var lanePool=cardinal==='N'?[-4,-2]:cardinal==='S'?[2,4]:cardinal==='E'?[1,3]:cardinal==='W'?[-3,-1]:[-4,-2,2,4];
+    var lx=lanePool[Math.floor(Math.random()*lanePool.length)]+(Math.random()-.5)*.6;
+    group.position.set(lx,0.45,(Math.random()-0.5)*70);
+    var goingForward=(lx<0)||(cardinal==='N')||(cardinal==='E');
+    group.rotation.y=goingForward?0:Math.PI;
+    var spd=ev&&ev.speedMph?ev.speedMph*0.012:(0.05+Math.random()*0.18)*speedMult;
+    group.userData={
+        speed:spd,forward:goingForward,laneX:lx,
+        vehicleType:vSpec.type||'sedan',icon:vSpec.icon||'🚗',
+        make:vSpec.make||'',model:vSpec.model||'',
+        cardinal:cardinal||(goingForward?'N':'S'),
+        zoneId:zoneId||'',isSimulation:!!isSimulation,
+        event:ev||null,_opacityReset:false
     };
-    scene3d.add(group);
     vehicles3d.push(group);
+    if(scene3d) scene3d.add(group);
     return group;
 }
 
-// ── Animation loop ───────────────────────────────────────────────────────────
-
+// ── Animation loop ───────────────────────────────────────────────────────
+var animFrameId=null;
 function animate3d() {
-    requestAnimationFrame(animate3d);
-
+    animFrameId=requestAnimationFrame(animate3d);
     vehicles3d.forEach(function(v) {
-        // When paused: only simulation vehicles keep moving
-        var canMove = !animationPaused || v.userData.isSimulation;
-        if (!canMove) return;
-
-        // When zone filtered: dim ambient vehicles not from that zone
-        if (selectedZoneId && !v.userData.fromEvent) {
-            v.traverse(function(c) {
-                if (c.isMesh && c.material && c.material.color) {
-                    c.material.transparent = true;
-                    c.material.opacity     = 0.25;
-                }
-            });
-        } else if (!v.userData._opacityReset) {
-            v.userData._opacityReset = true;
-            v.traverse(function(c) {
-                if (c.isMesh && c.material) {
-                    c.material.transparent = false;
-                    c.material.opacity     = 1;
-                }
-            });
-        }
-
-        v.position.z += v.userData.dir * v.userData.speed * speedMult;
-        if (v.position.z >  42) { v.position.z = -42; pushFeed3d(v, false, null, v.userData.isSimulation); }
-        if (v.position.z < -42) { v.position.z =  42; pushFeed3d(v, false, null, v.userData.isSimulation); }
+        var s=v.userData.speed*speedMult;
+        if(v.userData.forward) v.position.z-=s; else v.position.z+=s;
+        if(v.position.z< -42) v.position.z=42;
+        if(v.position.z>  42) v.position.z=-42;
+        if(!v.userData._opacityReset){v.userData._opacityReset=true;}
     });
-
-    // Maintain ambient density only when live (not paused)
-    if (!animationPaused) {
-        var ambient = vehicles3d.filter(function(v) { return !v.userData.fromEvent; });
-        while (ambient.length < density) {
-            var s = spawnV(null, false, '');
-            ambient.push(s);
-        }
-        // Trim excess
-        while (vehicles3d.length > density + 25) scene3d.remove(vehicles3d.shift());
-    }
-
-    renderer3d.render(scene3d, camera3d);
+    if(renderer3d&&scene3d&&camera3d) renderer3d.render(scene3d,camera3d);
 }
 
-// ── Live event polling ───────────────────────────────────────────────────────
-
-var lastPollTime    = new Date().toISOString();
-var lastSimPollTime = new Date().toISOString();
-var feedItems3d     = [];
-var liveEventInterval = null;
-var simEventInterval  = null;
-
-function startEventPolling() {
+// ── Live polling (non-sim mode) ──────────────────────────────────────────
+function startLivePolling() {
+    if(liveEventInterval) return; // already running
     liveEventInterval = setInterval(pollLiveEvents, 3000);
+}
+function stopLivePolling() {
+    if(liveEventInterval){clearInterval(liveEventInterval);liveEventInterval=null;}
 }
 
 function pollLiveEvents() {
-    var url = '/api/events/live?highwayId=' + encodeURIComponent(highwayId) +
-              '&since=' + encodeURIComponent(lastPollTime);
-    if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
-
+    var url='/api/events/live?highwayId='+encodeURIComponent(highwayId)+
+            '&since='+encodeURIComponent(lastPollTime);
+    if(selectedZoneId) url+='&zoneId='+encodeURIComponent(selectedZoneId);
     fetch(url)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.events || !data.events.length) return;
-            lastPollTime = data.serverTime;
-            data.events.forEach(function(ev) {
-                var spec = vehicleGetRandom(ev.vehicleType || null);
-                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', false, ev);
-                if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
-                // Reset opacity so event vehicles are always bright
-                grp.userData._opacityReset = false;
-                pushFeed3d(grp, true, ev, false);
+        .then(function(r){return r.json();})
+        .then(function(data){
+            if(!data.events||!data.events.length){return;}
+            lastPollTime=data.serverTime;
+            data.events.forEach(function(ev){
+                if(seenEventIds.has(ev.id))return;
+                seenEventIds.add(ev.id);
+                var spec=vehicleGetRandom(ev.vehicleType||null);
+                var grp=spawnV(spec,true,ev.zoneId||selectedZoneId||'',ev.isSimulated,ev);
+                if(ev.speedMph) grp.userData.speed=ev.speedMph*0.012;
+                pushFeed3d(grp,true,ev,ev.isSimulated||false);
             });
-        })
-        .catch(function() {});
+        }).catch(function(){});
 }
 
-// ── Enter / exit simulation mode ────────────────────────────────────────────
-
+// ── Sim mode enter/exit ──────────────────────────────────────────────────
 function enterSimMode() {
-    if (!scene3dInitialized) {
-        // Scene not ready yet — retry after another 400ms
-        setTimeout(enterSimMode, 400);
-        return;
-    }
-    // 1. Stop live polling
-    if (liveEventInterval) { clearInterval(liveEventInterval); liveEventInterval = null; }
-    // 2. Clear current scene vehicles
-    vehicles3d.forEach(function(v) { scene3d.remove(v); });
-    vehicles3d.length = 0;
-    feedItems3d.length = 0;
-    // 3. Set paused flag + update UI
-    animationPaused = true;
-    var btn = document.getElementById('btnAnimToggle');
-    if (btn) { btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Resume'; btn.className = 'btn btn-success btn-sm'; }
-    var feedTitle = document.getElementById('feedTitle');
-    var simBadge  = document.getElementById('simModeBadge');
-    var liveBadge = document.getElementById('livePulseBadge');
-    if (feedTitle) { feedTitle.textContent = 'Simulation Feed'; feedTitle.style.color = '#f59e0b'; }
-    if (simBadge)  simBadge.style.display = '';
-    if (liveBadge) { liveBadge.textContent = 'SIM ONLY'; liveBadge.style.background = '#92400e'; }
-    // 4. Load all persisted sim records into scene (loadSceneFromDB sets lastSimPollTime)
-    lastSimPollTime = new Date().toISOString(); // poll cursor: only NEW events after this point
+    if(!scene3dInitialized){setTimeout(enterSimMode,400);return;}
+    if(animationPaused) return; // already in sim mode — don't double-enter
+    animationPaused=true;
+
+    // Stop live polling
+    stopLivePolling();
+
+    // Clear scene
+    vehicles3d.forEach(function(v){scene3d.remove(v);});
+    vehicles3d.length=0;
+    feedItems3d.length=0;
+    seenEventIds.clear();
+
+    // Update UI
+    var btn=document.getElementById('btnAnimToggle');
+    if(btn){btn.innerHTML='<i class="bi bi-play-fill me-1"></i>Resume';btn.className='btn btn-success btn-sm';}
+    setSimUI(true);
+
+    // Load scene snapshot then start delta-polling
+    // (simEventInterval will NOT be started until loadSceneFromDB completes)
     loadSceneFromDB();
-    // 5. Start delta-polling so NEW sim events appear as the DataInputFormats sim keeps running
-    if (!simEventInterval) {
-        simEventInterval = setInterval(pollSimulationEvents, 3000);
-    }
 }
 
 function exitSimMode() {
-    if (simEventInterval) { clearInterval(simEventInterval); simEventInterval = null; }
-    vehicles3d.forEach(function(v) { scene3d.remove(v); });
-    vehicles3d.length = 0;
-    feedItems3d.length = 0;
-    animationPaused = false;
-    var btn = document.getElementById('btnAnimToggle');
-    if (btn) { btn.innerHTML = '<i class="bi bi-pause-fill me-1"></i>Pause'; btn.className = 'btn btn-outline-warning btn-sm'; }
-    var feedTitle = document.getElementById('feedTitle');
-    var simBadge  = document.getElementById('simModeBadge');
-    var liveBadge = document.getElementById('livePulseBadge');
-    if (feedTitle) { feedTitle.textContent = 'Live Feed'; feedTitle.style.color = ''; }
-    if (simBadge)  simBadge.style.display = 'none';
-    if (liveBadge) { liveBadge.textContent = 'LIVE'; liveBadge.style.background = ''; }
-    var feedEl = document.getElementById('trafficFeed');
-    if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2"><i class="bi bi-arrow-repeat me-2"></i>Resuming live feed…</p>';
-    if (!liveEventInterval) {
-        lastPollTime = new Date(Date.now() - 10000).toISOString();
-        liveEventInterval = setInterval(pollLiveEvents, 3000);
-        pollLiveEvents();
+    if(!animationPaused) return; // already in live mode
+    animationPaused=false;
+
+    stopSimPolling();
+    vehicles3d.forEach(function(v){scene3d.remove(v);});
+    vehicles3d.length=0;
+    feedItems3d.length=0;
+    seenEventIds.clear();
+
+    var btn=document.getElementById('btnAnimToggle');
+    if(btn){btn.innerHTML='<i class="bi bi-pause-fill me-1"></i>Pause';btn.className='btn btn-outline-warning btn-sm';}
+    setSimUI(false);
+
+    var feedEl=document.getElementById('trafficFeed');
+    if(feedEl) feedEl.innerHTML='<p class="text-muted small p-2"><i class="bi bi-arrow-repeat me-2"></i>Resuming live feed…</p>';
+
+    lastPollTime=new Date(Date.now()-30000).toISOString();
+    startLivePolling();
+    pollLiveEvents();
+}
+
+function setSimUI(on) {
+    var feedTitle=document.getElementById('feedTitle');
+    var simBadge =document.getElementById('simModeBadge');
+    var liveBadge=document.getElementById('livePulseBadge');
+    if(on){
+        if(feedTitle){feedTitle.textContent=selectedZoneId?((zoneData.find(function(z){return z.zoneId===selectedZoneId;})||{}).zoneName||selectedZoneId)+' Sim Feed':'Simulation Feed';feedTitle.style.color='#f59e0b';}
+        if(simBadge) simBadge.style.display='';
+        if(liveBadge){liveBadge.textContent='SIM ONLY';liveBadge.style.background='#92400e';}
+    }else{
+        if(feedTitle){feedTitle.textContent='Live Feed';feedTitle.style.color='';}
+        if(simBadge) simBadge.style.display='none';
+        if(liveBadge){liveBadge.textContent='LIVE';liveBadge.style.background='';}
     }
 }
 
-// ── Simulation-only polling (used when paused) ───────────────────────────────
-
-function pollSimulationEvents() {
-    var url = '/api/events/simulation?highwayId=' + encodeURIComponent(highwayId) +
-              '&since=' + encodeURIComponent(lastSimPollTime);
-    if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
-
-    fetch(url)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.events || !data.events.length) return;
-            lastSimPollTime = data.serverTime;
-            data.events.forEach(function(ev) {
-                var spec = vehicleGetRandom(ev.vehicleType || null);
-                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', true, ev);
-                if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
-                grp.userData._opacityReset = false;
-                pushFeed3d(grp, true, ev, true);
-            });
-        })
-        .catch(function() {});
+// ── Sim delta-polling (top-up while DataInputFormats tab keeps running) ──
+function startSimPolling() {
+    if(simEventInterval) return;
+    simEventInterval=setInterval(pollSimulationEvents,3000);
+}
+function stopSimPolling() {
+    if(simEventInterval){clearInterval(simEventInterval);simEventInterval=null;}
 }
 
-// ── Feed rendering ───────────────────────────────────────────────────────────
+function pollSimulationEvents() {
+    var url='/api/events/simulation?highwayId='+encodeURIComponent(highwayId)+
+            '&since='+encodeURIComponent(lastSimPollTime);
+    if(selectedZoneId) url+='&zoneId='+encodeURIComponent(selectedZoneId);
+    fetch(url)
+        .then(function(r){return r.json();})
+        .then(function(data){
+            if(!data.events||!data.events.length){return;}
+            lastSimPollTime=data.serverTime;
+            data.events.forEach(function(ev){
+                if(seenEventIds.has(ev.id))return;
+                seenEventIds.add(ev.id);
+                var spec=vehicleGetRandom(ev.vehicleType||null);
+                var grp=spawnV(spec,true,ev.zoneId||selectedZoneId||'',true,ev);
+                if(ev.speedMph) grp.userData.speed=ev.speedMph*0.012;
+                grp.userData._opacityReset=false;
+                pushFeed3d(grp,true,ev,true);
+            });
+        }).catch(function(){});
+}
 
-function pushFeed3d(v, fromInput, ev, isSimulation) {
-    var evType = (ev && ev.eventType) ? ev.eventType : 'detection';
-    var spd    = (ev && ev.speedMph)  ? Math.round(ev.speedMph) : Math.round((25 + Math.random() * 55) * speedMult);
+// ── Snapshot load (initial scene population) ─────────────────────────────
+function loadSceneFromDB() {
+    if(sceneLoadPending) return; // prevent concurrent loads
+    sceneLoadPending=true;
+
+    var url='/api/events/scene?limit=100&highwayId='+encodeURIComponent(highwayId);
+    if(selectedZoneId) url+='&zoneId='+encodeURIComponent(selectedZoneId);
+
+    var feedEl=document.getElementById('trafficFeed');
+    if(feedEl) feedEl.innerHTML='<p class="text-muted small p-2"><i class="bi bi-hourglass-split me-2"></i>Loading simulation data…</p>';
+
+    fetch(url)
+        .then(function(r){return r.json();})
+        .then(function(data){
+            sceneLoadPending=false;
+            // Clear current vehicles
+            vehicles3d.forEach(function(v){scene3d.remove(v);});
+            vehicles3d.length=0;
+            feedItems3d.length=0;
+
+            if(!data.events||!data.events.length){
+                if(feedEl) feedEl.innerHTML='<p class="text-muted small p-2">No saved simulation records yet. Start a simulation on the Data Input Formats tab, then return here.</p>';
+                // Still start delta-polling so new events appear as sim runs
+                lastSimPollTime=new Date().toISOString();
+                startSimPolling();
+                return;
+            }
+
+            if(feedEl) feedEl.innerHTML='';
+            var total=data.events.length;
+
+            // Mark all snapshot events as seen to prevent delta-poll duplicates
+            data.events.forEach(function(ev){ seenEventIds.add(ev.id); });
+
+            // Use the server's cursor (newest event timestamp) as our delta-poll start
+            // This means only events NEWER than the snapshot will come through delta-poll
+            lastSimPollTime = data.cursor || data.events.reduce(function(mx,ev){
+                return ev.createdDate > mx ? ev.createdDate : mx;
+            }, new Date(0).toISOString());
+
+            // Stagger spawn for animation effect
+            data.events.forEach(function(ev,i){
+                setTimeout(function(){
+                    var spec=vehicleGetRandom(ev.vehicleType||null);
+                    var grp=spawnV(spec,true,ev.zoneId||'',true,ev);
+                    if(ev.speedMph) grp.userData.speed=ev.speedMph*0.012;
+                    pushFeed3d(grp,true,ev,true);
+                },i*60);
+            });
+
+            // After spawn animation completes, start delta-polling for new events
+            setTimeout(function(){
+                console.log('[3D] Loaded '+total+' sim records. Poll cursor: '+lastSimPollTime);
+                startSimPolling();
+            }, total*60+300);
+        })
+        .catch(function(e){
+            sceneLoadPending=false;
+            console.error('loadSceneFromDB error',e);
+            startSimPolling(); // still poll even if snapshot failed
+        });
+}
+
+// ── Feed rendering ────────────────────────────────────────────────────────
+var FEED_EVENT_COLORS={detection:'#22c55e',merge:'#3b82f6',conflict:'#ef4444',speeding:'#f59e0b',fault:'#8b5cf6',ambient:'#64748b'};
+
+function pushFeed3d(v,fromInput,ev,isSimulation){
+    var evType=(ev&&ev.eventType)?ev.eventType:'detection';
+    var spd=(ev&&ev.speedMph)?Math.round(ev.speedMph):Math.round((25+Math.random()*55)*speedMult);
     feedItems3d.unshift({
-        icon:         v.userData.icon  || '🚗',
-        make:         v.userData.make  || '',
-        model:        v.userData.model || '',
-        eventType:    evType,
-        spd:          spd,
-        dir:          v.userData.cardinal || (v.userData.lane < 0 ? 'N' : 'S'),
-        zoneId:       v.userData.zoneId || '',
-        time:         new Date().toLocaleTimeString(),
-        fromInput:    fromInput || false,
-        isSimulation: isSimulation || v.userData.isSimulation || false
+        icon:v.userData.icon||'🚗',make:v.userData.make||'',model:v.userData.model||'',
+        eventType:evType,spd:spd,
+        dir:v.userData.cardinal||(v.userData.laneX<0?'N':'S'),
+        zoneId:v.userData.zoneId||'',
+        time:new Date().toLocaleTimeString(),
+        fromInput:fromInput||false,
+        isSimulation:isSimulation||v.userData.isSimulation||false,
+        vehicleType:v.userData.vehicleType||'sedan'
     });
-    if (feedItems3d.length > 30) feedItems3d.length = 30;
+    if(feedItems3d.length>30) feedItems3d.length=30;
     renderFeed3d();
 }
 
-// ── Direction label helper ────────────────────────────────────────────────────
-function dirLabel(d) {
-    return d === 'N' ? '↑ Northbound' : d === 'S' ? '↓ Southbound'
-         : d === 'E' ? '→ Eastbound'  : d === 'W' ? '← Westbound'
-         : d || '—';
-}
+function dirLabel(d){return d==='N'?'↑ Northbound':d==='S'?'↓ Southbound':d==='E'?'→ Eastbound':d==='W'?'← Westbound':d||'—';}
 
-// ── Event type color map ──────────────────────────────────────────────────────
-var FEED_EVENT_COLORS = {
-    detection:'#22c55e', merge:'#3b82f6', conflict:'#ef4444',
-    speeding:'#f59e0b',  fault:'#8b5cf6',  ambient:'#64748b'
-};
-
-// ── Load persisted simulated records into 3D scene ───────────────────────────
-function loadSceneFromDB() {
-    var url = '/api/events/scene?limit=100&highwayId=' + encodeURIComponent(highwayId);
-    if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
-    var feedEl = document.getElementById('trafficFeed');
-    if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2"><i class="bi bi-hourglass-split me-2"></i>Loading simulation data…</p>';
-    fetch(url)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.events || !data.events.length) {
-                if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2">No saved simulation records yet. Run a simulation first, then return here.</p>';
-                return;
-            }
-            // Clear current vehicles (keep only ambient non-event ones will be re-added)
-            if (vehicles3d) { vehicles3d.forEach(function(v) { scene3d.remove(v); }); vehicles3d.length = 0; }
-            feedItems3d.length = 0;
-            if (feedEl) feedEl.innerHTML = '';
-            var total = data.events.length;
-            // Stagger spawn so vehicles appear animated; track most-recent timestamp for follow-on polling
-            var latestTs = null;
-            data.events.forEach(function(ev, i) {
-                if (!latestTs || ev.createdDate > latestTs) latestTs = ev.createdDate;
-                setTimeout(function() {
-                    var spec = vehicleGetRandom(ev.vehicleType || null);
-                    var grp  = spawnV(spec, true, ev.zoneId || '', true, ev);
-                    pushFeed3d(grp, true, ev, true);
-                }, i * 80);
-            });
-            // After all vehicles spawned, advance the sim poll cursor to avoid duplicates
-            setTimeout(function() {
-                if (latestTs) lastSimPollTime = latestTs;
-                console.log('[3D] Loaded ' + total + ' sim records. Polling cursor: ' + lastSimPollTime);
-            }, total * 80 + 200);
-        })
-        .catch(function(e) { console.error('loadSceneFromDB error', e); });
-}
-
-function renderFeed3d() {
-    var feed = document.getElementById('trafficFeed');
-    feed.innerHTML = feedItems3d.map(function(f) {
-        var ec = FEED_EVENT_COLORS[f.eventType] || '#64748b';
-        var inputTag = f.isSimulation
-            ? '<span class="badge ms-1" style="font-size:.58rem;vertical-align:middle;background:#f59e0b;color:#000;font-weight:700"><i class="bi bi-cpu me-1"></i>SIM</span>'
-            : (f.fromInput
-                ? '<span class="badge bg-warning text-dark ms-1" style="font-size:.58rem;vertical-align:middle">DATA INPUT</span>'
-                : '');
-        // Show zone indicator when showing all zones
-        var zoneTag = (!selectedZoneId && f.zoneId)
-            ? '<span class="badge bg-secondary ms-1" style="font-size:.58rem;vertical-align:middle">' + f.zoneId + '</span>'
-            : '';
-        return '<div class="mss-list-item" style="padding:.35rem .75rem">' +
-            '<div class="d-flex justify-content-between align-items-center">' +
-            '<span style="font-size:.82rem">' + f.icon + ' <span class="fw-semibold">' + f.make + '</span> ' + f.model + inputTag + zoneTag + '</span>' +
-            '<span class="font-monospace text-muted" style="font-size:.6rem">' + f.time + '</span>' +
-            '</div>' +
-            '<div class="d-flex gap-2 align-items-center mt-1">' +
-            '<span class="fw-bold" style="color:' + ec + ';font-size:.74rem">' + f.eventType.toUpperCase() + '</span>' +
-            '<span class="text-muted" style="font-size:.74rem">' + dirLabel(f.dir) + ' · ' + f.spd + ' mph</span>' +
-            '</div>' +
-            '</div>';
+function renderFeed3d(){
+    var feed=document.getElementById('trafficFeed');
+    if(!feed)return;
+    feed.innerHTML=feedItems3d.map(function(f){
+        var ec=FEED_EVENT_COLORS[f.eventType]||'#64748b';
+        var inputTag=f.isSimulation
+            ?'<span class="badge ms-1" style="font-size:.58rem;vertical-align:middle;background:#f59e0b;color:#000;font-weight:700"><i class="bi bi-cpu me-1"></i>SIM</span>'
+            :(f.fromInput?'<span class="badge bg-warning text-dark ms-1" style="font-size:.58rem;vertical-align:middle">DATA INPUT</span>':'');
+        var zoneTag=(!selectedZoneId&&f.zoneId)?'<span class="badge bg-secondary ms-1" style="font-size:.58rem;vertical-align:middle">'+f.zoneId+'</span>':'';
+        var typeTag='<span class="badge ms-1" style="font-size:.55rem;vertical-align:middle;background:rgba(255,255,255,.1);color:#94a3b8">'+f.vehicleType+'</span>';
+        return '<div class="mss-list-item" style="padding:.35rem .75rem">'+
+            '<div class="d-flex justify-content-between align-items-center">'+
+            '<span style="font-size:.82rem">'+f.icon+' <span class="fw-semibold">'+f.make+'</span> '+f.model+inputTag+zoneTag+'</span>'+
+            '<span class="font-monospace text-muted" style="font-size:.6rem">'+f.time+'</span></div>'+
+            '<div class="d-flex gap-2 mt-1" style="font-size:.68rem">'+
+            '<span style="color:'+ec+'">●&nbsp;'+f.eventType+'</span>'+
+            typeTag+
+            '<span class="text-muted">'+f.spd+' mph</span>'+
+            '<span class="text-muted ms-auto">'+dirLabel(f.dir)+'</span></div></div>';
     }).join('');
 }
 
-// ── Vehicle click-to-inspect ─────────────────────────────────────────────────
-
-function clearVehicleHighlight(v) {
-    if (!v) return;
-    v.traverse(function(c) {
-        if (c.isMesh && c.material && c.material.emissive) {
-            c.material.emissive.setHex(0x000000);
-            c.material.emissiveIntensity = 0;
-        }
-    });
+// ── Vehicle detail panel ──────────────────────────────────────────────────
+function vdSwitchTab(t){
+    document.getElementById('vdBodyFmt').style.display=t==='fmt'?'':'none';
+    document.getElementById('vdBodyRaw').style.display=t==='raw'?'':'none';
+    document.getElementById('vdTabFmt').style.background=t==='fmt'?'rgba(59,130,246,.18)':'transparent';
+    document.getElementById('vdTabFmt').style.color=t==='fmt'?'#60a5fa':'#64748b';
+    document.getElementById('vdTabRaw').style.background=t==='raw'?'rgba(59,130,246,.18)':'transparent';
+    document.getElementById('vdTabRaw').style.color=t==='raw'?'#60a5fa':'#64748b';
 }
+function closeVehicleDetail(){var p=document.getElementById('vehicleDetailPanel');if(p)p.style.display='none';selectedVehicle3d=null;}
 
-function closeVehicleDetail() {
-    clearVehicleHighlight(selectedVehicle3d);
-    selectedVehicle3d = null;
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (panel) panel.style.display = 'none';
-}
-
-function vdSwitchTab(tab) {
-    document.getElementById('vdBodyFmt').style.display = tab === 'fmt' ? '' : 'none';
-    document.getElementById('vdBodyRaw').style.display = tab === 'raw' ? '' : 'none';
-    document.getElementById('vdTabFmt').style.background = tab === 'fmt' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabRaw').style.background = tab === 'raw' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabFmt').style.color = tab === 'fmt' ? '#60a5fa' : '#64748b';
-    document.getElementById('vdTabRaw').style.color = tab === 'raw' ? '#60a5fa' : '#64748b';
-}
-
-function showVehicleDetail(v, cx, cy) {
-    if (selectedVehicle3d && selectedVehicle3d !== v) clearVehicleHighlight(selectedVehicle3d);
-    selectedVehicle3d = v;
-
-    // Amber emissive highlight on selected vehicle
-    v.traverse(function(c) {
-        if (c.isMesh && c.material && c.material.emissive) {
-            c.material.emissive.setHex(0xf59e0b);
-            c.material.emissiveIntensity = 0.55;
-        }
-    });
-
-    var ud = v.userData;
-    var srcTag = ud.isSimulation
-        ? '<span style="background:#f59e0b;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">SIM</span>'
-        : (ud.fromEvent
-            ? '<span style="background:#22c55e;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">LIVE</span>'
-            : '<span style="background:#475569;color:#fff;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">AMBIENT</span>');
-    var cardinal3d = ud.cardinal || (ud.lane < 0 ? 'N' : 'S');
-    var dirLabel3d = cardinal3d === 'N' ? 'Northbound (↑)' : cardinal3d === 'S' ? 'Southbound (↓)'
-                   : cardinal3d === 'E' ? 'Eastbound (→)'  : cardinal3d === 'W' ? 'Westbound (←)' : '—';
-    var spdMph   = Math.round(ud.speed / 0.012);
-
-    document.getElementById('vdTitle').innerHTML = (ud.icon || '🚗') + ' ' +
-        (ud.make || 'Vehicle') + ' ' + (ud.model || '') + srcTag;
-
-    // ── Formatted tab ──
-    var rows = [
-        ['Type',       ud.type         || '—'],
-        ['Make/Model', (ud.make || '—') + ' ' + (ud.model || '')],
-        ['Direction',  dirLabel3d],
-        ['Speed',      spdMph + ' mph'],
-        ['Event Type', ud.evEventType  || (ud.fromEvent ? '—' : 'ambient fill')],
-        ['Zone',       ud.evZoneId || ud.zoneId || '—'],
-        ['Highway',    ud.evHighwayId  || highwayId || '—'],
-        ['Vehicle ID', ud.evVehicleId  || '—'],
-        ['Device ID',  ud.evDeviceId   || '—'],
+function showVehicleDetail(obj,cx,cy){
+    selectedVehicle3d=obj;
+    var ev=obj.userData.event;
+    var vt=obj.userData.vehicleType||'sedan';
+    var make=obj.userData.make||'';
+    var model=obj.userData.model||'';
+    var simTag=obj.userData.isSimulation?'<span style="background:#f59e0b;color:#000;padding:1px 6px;border-radius:3px;font-size:.65rem;font-weight:700;margin-left:4px">SIM</span>':'';
+    document.getElementById('vdTitle').innerHTML='<span style="font-size:1rem">'+obj.userData.icon+'</span>&nbsp;'+make+' '+model+simTag;
+    var rows=[
+        ['Vehicle Type',vt],
+        ['Direction',dirLabel(obj.userData.cardinal)],
+        ['Speed',(ev&&ev.speedMph?Math.round(ev.speedMph):Math.round((25+Math.random()*55)))+ ' mph'],
+        ['Zone',obj.userData.zoneId||'—'],
+        ['Event Type',(ev&&ev.eventType)||'detection'],
+        ['Is Simulation',obj.userData.isSimulation?'✅ Yes':'❌ No'],
     ];
-    if (ud.evLatitude)    rows.push(['Latitude',  ud.evLatitude]);
-    if (ud.evLongitude)   rows.push(['Longitude', ud.evLongitude]);
-    if (ud.evCreatedDate) rows.push(['Timestamp', new Date(ud.evCreatedDate).toLocaleString()]);
-
-    document.getElementById('vdBodyFmt').innerHTML =
-        '<table style="width:100%;border-collapse:collapse">' +
-        rows.map(function(r) {
-            return '<tr>' +
-                '<td style="color:#64748b;padding:3px 8px 3px 0;width:88px;vertical-align:top;' +
-                    'font-size:.7rem">' + r[0] + '</td>' +
-                '<td style="color:#e2e8f0;padding:3px 0;font-weight:500;font-size:.72rem">' +
-                    r[1] + '</td></tr>';
-        }).join('') + '</table>';
-
-    // ── Raw JSON tab ──
-    var rawContent = '(ambient vehicle — no event record)';
-    if (ud.evPayload) {
-        try { rawContent = JSON.stringify(JSON.parse(ud.evPayload), null, 2); }
-        catch(e) { rawContent = ud.evPayload; }
-    }
-    document.getElementById('vdRawPre').textContent = rawContent;
-
+    if(ev&&ev.vehicleId) rows.splice(0,0,['Vehicle ID',ev.vehicleId]);
+    if(ev&&ev.latitude)  rows.push(['GPS',''+ev.latitude+', '+ev.longitude]);
+    document.getElementById('vdBodyFmt').innerHTML=rows.map(function(r){
+        return '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.05)">'+
+               '<span style="color:#64748b;font-size:.72rem">'+r[0]+'</span>'+
+               '<span style="color:#e2e8f0;font-size:.72rem;font-weight:600;text-align:right;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r[1]+'</span></div>';
+    }).join('');
+    var rawObj={vehicleId:ev&&ev.vehicleId||null,vehicleType:vt,make:make,model:model,direction:obj.userData.cardinal,speedMph:ev&&ev.speedMph||null,zoneId:obj.userData.zoneId,isSimulation:obj.userData.isSimulation,event:ev};
+    document.getElementById('vdRawPre').textContent=JSON.stringify(rawObj,null,2);
     vdSwitchTab('fmt');
-
-    // Position panel — clamped inside canvas container
-    var panel     = document.getElementById('vehicleDetailPanel');
-    var container = document.getElementById('scene3dContainer');
-    panel.style.display = '';
-    var rect   = container.getBoundingClientRect();
-    var pw     = 300, ph = panel.offsetHeight || 320;
-    var px     = (cx - rect.left) + 14;
-    var py     = (cy - rect.top)  + 14;
-    if (px + pw > container.clientWidth  - 4) px = (cx - rect.left) - pw - 14;
-    if (py + ph > container.clientHeight - 4) py = (cy - rect.top)  - ph - 14;
-    panel.style.left = Math.max(4, px) + 'px';
-    panel.style.top  = Math.max(4, py) + 'px';
+    var panel=document.getElementById('vehicleDetailPanel');
+    var container=document.getElementById('scene3dContainer');
+    panel.style.display='';
+    var rect=container.getBoundingClientRect();
+    var pw=300,ph=panel.offsetHeight||320;
+    var px=(cx-rect.left)+14,py=(cy-rect.top)+14;
+    if(px+pw>container.clientWidth-4)  px=(cx-rect.left)-pw-14;
+    if(py+ph>container.clientHeight-4) py=(cy-rect.top)-ph-14;
+    panel.style.left=Math.max(4,px)+'px';
+    panel.style.top=Math.max(4,py)+'px';
 }
 
-// ── Cross-tab simulation sync ─────────────────────────────────────────────────
-(function() {
-    function onSimStateChange(simStarted) {
-        if (simStarted) {
-            if (!scene3dInitialized) { setMode('3d'); setTimeout(enterSimMode, 600); }
-            else if (!animationPaused) enterSimMode();
-        } else {
-            if (animationPaused) exitSimMode();
+// ── Cross-tab sim sync (BroadcastChannel + localStorage) ─────────────────
+function getSimActive(){
+    try{return localStorage.getItem('eyeways_sim_active')==='true';}catch(e){return false;}
+}
+(function(){
+    function onSimStateChange(started){
+        if(started){
+            // Sim started in the other tab
+            if(!scene3dInitialized){setMode('3d');setTimeout(enterSimMode,800);}
+            else if(!animationPaused){enterSimMode();}
+            // If already in sim mode: just let the running delta-poll pick up new events (do nothing)
+        }else{
+            // Sim stopped — exit sim mode and return to live feed
+            if(animationPaused) exitSimMode();
+            // Clear the sim-active flag
+            try{localStorage.removeItem('eyeways_sim_active');}catch(e){}
         }
     }
-    if (typeof BroadcastChannel !== 'undefined') {
-        var bc = new BroadcastChannel('eyeways_sim');
-        bc.onmessage = function(e) {
-            if (!e.data || !e.data.type) return;
-            onSimStateChange(e.data.type === 'sim_started');
+    if(typeof BroadcastChannel!=='undefined'){
+        var bc=new BroadcastChannel('eyeways_sim');
+        bc.onmessage=function(e){
+            if(!e.data||!e.data.type)return;
+            onSimStateChange(e.data.type==='sim_started');
         };
     }
-    window.addEventListener('storage', function(e) {
-        if (e.key === 'eyeways_sim_active') onSimStateChange(e.newValue === 'true');
+    window.addEventListener('storage',function(e){
+        if(e.key==='eyeways_sim_active') onSimStateChange(e.newValue==='true');
     });
 })();
 
-// ── 5-min countdown ──────────────────────────────────────────────────────────
-var countdown = 300;
-setInterval(function() {
+// ── 5-min countdown ───────────────────────────────────────────────────────
+var countdown=300;
+setInterval(function(){
     countdown--;
-    if (countdown <= 0) { countdown = 300; loadSegments(); }
-    var m = Math.floor(countdown / 60), s = countdown % 60;
-    document.getElementById('mapRefreshTimer').textContent =
-        'Refreshes in ' + m + ':' + (s < 10 ? '0' : '') + s;
-}, 1000);
+    if(countdown<=0){countdown=300;loadSegments();}
+    var m=Math.floor(countdown/60),s=countdown%60;
+    document.getElementById('mapRefreshTimer').textContent='Refreshes in '+m+':'+(s<10?'0':'')+s;
+},1000);
 </script>
 }
