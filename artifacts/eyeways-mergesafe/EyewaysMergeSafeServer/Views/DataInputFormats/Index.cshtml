@@ -619,229 +619,308 @@ function appendSimLog(payloadStr, label, srcType, resp) {
 
 // ── Embedded 3D panel toggle ─────────────────────────────────────────────
 var mini3DInitialized = false;
-var mini3DPanel3DOpen = false;
+var mini3DPanelOpen   = false;
+
+// Scene state (self-contained, no SceneManager conflict)
+var m3Scene, m3Camera, m3Renderer, m3AnimId;
+var m3Vehicles   = [];   // [{group, userData}]
+var m3SeenIds    = new Set();
+var m3PollTimer  = null;
+var m3LastPoll   = null; // set on init so we only fetch events AFTER panel opens
+
+// Lane layout: negative X = NB/WB lanes, positive X = SB/EB lanes
+var M3_LANES = [-5.5, -3.5, -1.5, 1.5, 3.5, 5.5];
 
 function toggle3DPanel() {
     var panel = document.getElementById('simScene3DPanel');
     var icon  = document.getElementById('icon3DPanel');
-    mini3DPanel3DOpen = !mini3DPanel3DOpen;
-    panel.style.display = mini3DPanel3DOpen ? '' : 'none';
-    if (icon) {
-        icon.className = mini3DPanel3DOpen ? 'bi bi-chevron-up ms-1' : 'bi bi-chevron-down ms-1';
-    }
-    if (mini3DPanel3DOpen && !mini3DInitialized) {
-        initMini3D();
-    }
-    if (mini3DPanel3DOpen) {
-        // scroll into view smoothly
+    mini3DPanelOpen = !mini3DPanelOpen;
+    panel.style.display = mini3DPanelOpen ? '' : 'none';
+    if (icon) icon.className = mini3DPanelOpen ? 'bi bi-chevron-up ms-1' : 'bi bi-chevron-down ms-1';
+    if (mini3DPanelOpen) {
+        if (!mini3DInitialized) initMini3D();
         setTimeout(function(){
             document.getElementById('simScene3DPanel').scrollIntoView({behavior:'smooth',block:'nearest'});
-        }, 60);
+        }, 80);
     }
 }
 
-// ── Mini Three.js scene variables ─────────────────────────────────────────
-var mini3DScene, mini3DCamera, mini3DRenderer, mini3DAnimId;
-var mini3DVehicles = [];
-var mini3DSeenIds  = new Set();
-var mini3DFeedItems = [];
-var mini3DPollTimer = null;
-var mini3DLastPoll  = new Date().toISOString();
-var mini3DSpeedMult = 1;
-
+// ── Init ──────────────────────────────────────────────────────────────────
 function initMini3D() {
     if (mini3DInitialized) return;
     mini3DInitialized = true;
+    m3LastPoll = new Date().toISOString(); // anchor: only NEW events from here
 
-    var canvas    = document.getElementById('simMiniCanvas');
     var container = document.getElementById('simMini3DContainer');
-    var W = container.clientWidth, H = container.clientHeight;
+    var W = container.clientWidth  || 600;
+    var H = container.clientHeight || 420;
 
-    mini3DScene    = new THREE.Scene();
-    mini3DScene.background = new THREE.Color(0x060d1a);
-    mini3DScene.fog = new THREE.Fog(0x060d1a, 40, 90);
+    // ── Renderer (appended into container, not targeting <canvas> directly) ──
+    m3Renderer = new THREE.WebGLRenderer({ antialias: true });
+    m3Renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    m3Renderer.setSize(W, H);
+    m3Renderer.shadowMap.enabled = true;
 
-    mini3DCamera = new THREE.PerspectiveCamera(50, W/H, 0.1, 200);
-    mini3DCamera.position.set(0, 18, 22);
-    mini3DCamera.lookAt(0, 0, 0);
-
-    mini3DRenderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true});
-    mini3DRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-    mini3DRenderer.setSize(W, H);
-    mini3DRenderer.shadowMap.enabled = true;
-
-    // Lights
-    mini3DScene.add(new THREE.AmbientLight(0x8fa8c8, 0.6));
-    var sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    sun.position.set(20, 40, 20);
-    mini3DScene.add(sun);
-
-    // Road surface
-    var road = new THREE.Mesh(
-        new THREE.PlaneGeometry(16, 80),
-        new THREE.MeshLambertMaterial({color:0x1e293b})
-    );
-    road.rotation.x = -Math.PI/2;
-    mini3DScene.add(road);
-
-    // Lane markings
-    for (var zi = -36; zi < 37; zi += 6) {
-        [-5,-3,3,5].forEach(function(xl){
-            var lm = new THREE.Mesh(
-                new THREE.PlaneGeometry(0.12,3),
-                new THREE.MeshBasicMaterial({color:Math.abs(xl)===5?0xffffff:0xffff00})
-            );
-            lm.rotation.x = -Math.PI/2;
-            lm.position.set(xl,0.03,zi);
-            mini3DScene.add(lm);
-        });
+    // Replace the placeholder canvas with the real renderer canvas
+    var placeholder = document.getElementById('simMiniCanvas');
+    if (placeholder && placeholder.parentNode) {
+        placeholder.parentNode.replaceChild(m3Renderer.domElement, placeholder);
+    } else {
+        container.appendChild(m3Renderer.domElement);
     }
-    [-7.2,7.2].forEach(function(cx){
-        var curb = new THREE.Mesh(
-            new THREE.BoxGeometry(0.25,0.12,80),
-            new THREE.MeshLambertMaterial({color:0x2c3a52})
-        );
-        curb.position.set(cx,0.06,0);
-        mini3DScene.add(curb);
+    m3Renderer.domElement.style.cssText = 'width:100%;height:100%;display:block';
+
+    // ── Scene ──
+    m3Scene = new THREE.Scene();
+    m3Scene.background = new THREE.Color(0x060d1a);
+    m3Scene.fog = new THREE.Fog(0x060d1a, 55, 100);
+
+    // ── Camera ──
+    m3Camera = new THREE.PerspectiveCamera(52, W / H, 0.1, 200);
+    m3Camera.position.set(0, 20, 26);
+    m3Camera.lookAt(0, 0, 0);
+
+    // ── Lights ──
+    m3Scene.add(new THREE.AmbientLight(0x8fa8d8, 0.7));
+    var sun = new THREE.DirectionalLight(0xffeebb, 1.3);
+    sun.position.set(15, 40, 20);
+    sun.castShadow = true;
+    m3Scene.add(sun);
+    m3Scene.add(new THREE.PointLight(0x3b82f6, 0.4, 60));
+
+    // ── Road ──
+    _m3BuildRoad();
+
+    // ── Resize ──
+    window.addEventListener('resize', function() {
+        var nw = container.clientWidth || 600, nh = container.clientHeight || 420;
+        m3Camera.aspect = nw / nh;
+        m3Camera.updateProjectionMatrix();
+        m3Renderer.setSize(nw, nh);
     });
 
-    // Handle resize
-    window.addEventListener('resize', function(){
-        var nw = container.clientWidth, nh = container.clientHeight;
-        mini3DCamera.aspect = nw/nh;
-        mini3DCamera.updateProjectionMatrix();
-        mini3DRenderer.setSize(nw,nh);
-    });
-
-    // Click-to-inspect
-    canvas.addEventListener('click', function(e){
-        var rect = canvas.getBoundingClientRect();
-        var mx = ((e.clientX-rect.left)/rect.width)*2-1;
-        var my = -((e.clientY-rect.top)/rect.height)*2+1;
+    // ── Click-to-inspect ──
+    m3Renderer.domElement.addEventListener('click', function(e) {
+        var rect = m3Renderer.domElement.getBoundingClientRect();
+        var mx = ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+        var my = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
         var rc = new THREE.Raycaster();
-        rc.setFromCamera({x:mx,y:my}, mini3DCamera);
+        rc.setFromCamera({x: mx, y: my}, m3Camera);
         var meshes = [];
-        mini3DVehicles.forEach(function(v){v.traverse(function(c){if(c.isMesh)meshes.push(c);});});
-        var hits = rc.intersectObjects(meshes);
-        if (hits.length) {
-            var grp = hits[0].object;
-            while (grp.parent && grp.parent !== mini3DScene) grp = grp.parent;
-            if (grp.userData && grp.userData.event) openFeedModal(grp.userData.event, grp);
+        m3Vehicles.forEach(function(v) {
+            v.group.traverse(function(c) { if (c.isMesh) { c.__vIdx = v.idx; meshes.push(c); } });
+        });
+        var hits = rc.intersectObjects(meshes, false);
+        if (hits.length > 0) {
+            var idx = hits[0].object.__vIdx;
+            var veh = m3Vehicles.find(function(v){ return v.idx === idx; });
+            if (veh && veh.event) openFeedModal(veh.event, null);
         }
     });
 
     // Hide loader
-    document.getElementById('simMini3DLoader').style.display = 'none';
+    var loader = document.getElementById('simMini3DLoader');
+    if (loader) loader.style.display = 'none';
 
-    animateMini3D();
-    startMini3DPoll();
+    // ── Start render loop ──
+    _m3Animate();
+
+    // ── Load snapshot of existing sim events, then start delta-poll ──
+    _m3LoadSnapshot();
 }
 
-function spawnMiniVehicle(ev) {
-    var spec = typeof vehicleGetRandom === 'function' ? vehicleGetRandom(ev.vehicleType||null) : null;
-    if (!spec) {
-        // Fallback simple box
-        var grp = new THREE.Group();
-        var body = new THREE.Mesh(
-            new THREE.BoxGeometry(1.8,0.7,4.2),
-            new THREE.MeshLambertMaterial({color:0x3b82f6})
+function _m3BuildRoad() {
+    // Ground
+    var gnd = new THREE.Mesh(
+        new THREE.PlaneGeometry(200, 200),
+        new THREE.MeshLambertMaterial({ color: 0x0a0f1a })
+    );
+    gnd.rotation.x = -Math.PI / 2;
+    gnd.receiveShadow = true;
+    m3Scene.add(gnd);
+
+    // Road surface
+    var road = new THREE.Mesh(
+        new THREE.PlaneGeometry(14, 90),
+        new THREE.MeshLambertMaterial({ color: 0x1e293b })
+    );
+    road.rotation.x = -Math.PI / 2;
+    road.position.y = 0.01;
+    road.receiveShadow = true;
+    m3Scene.add(road);
+
+    // Kerbs
+    [-7.2, 7.2].forEach(function(cx) {
+        var k = new THREE.Mesh(
+            new THREE.BoxGeometry(0.3, 0.15, 90),
+            new THREE.MeshLambertMaterial({ color: 0x2c3a52 })
         );
-        body.position.y = 0.35;
-        grp.add(body);
-        spec = null;
-        // manual spawn
-        var laneX = (ev.direction === 'N' || ev.direction === 'W') ? -2.5 : 2.5;
-        grp.position.set(laneX, 0, (Math.random()-0.5)*60);
-        grp.userData = {
-            speed: (ev.speedMph||40)*0.012, laneX: laneX,
-            dir: (ev.direction === 'N' || ev.direction === 'W') ? -1 : 1,
-            event: ev, vehicleType: ev.vehicleType||'sedan',
-            make:'', model:'', icon:'🚗', cardinal: ev.direction||'N',
-            isSimulation: true, zoneId: ev.zoneId||''
-        };
-        mini3DScene.add(grp);
-        mini3DVehicles.push(grp);
-        return grp;
-    }
-    // Use vehicleScene.js helpers if available
-    if (typeof buildVehicleGroup === 'function') {
-        var lanes = [-5.5,-3.5,3.5,5.5];
-        var laneX = lanes[Math.floor(Math.random()*lanes.length)];
-        var dir   = laneX < 0 ? -1 : 1;
-        var grp2  = buildVehicleGroup(spec);
-        grp2.position.set(laneX, 0, (Math.random()-0.5)*60);
-        grp2.userData.speed = (ev.speedMph||40)*0.012;
-        grp2.userData.dir   = dir;
-        grp2.userData.laneX = laneX;
-        grp2.userData.event = ev;
-        grp2.userData.isSimulation = true;
-        grp2.userData.cardinal = ev.direction||'N';
-        grp2.userData.zoneId   = ev.zoneId||'';
-        mini3DScene.add(grp2);
-        mini3DVehicles.push(grp2);
-        return grp2;
-    }
-    return null;
-}
+        k.position.set(cx, 0.07, 0);
+        m3Scene.add(k);
+    });
 
-function animateMini3D() {
-    mini3DAnimId = requestAnimationFrame(animateMini3D);
-    // Move vehicles
-    for (var i = mini3DVehicles.length-1; i >= 0; i--) {
-        var v = mini3DVehicles[i];
-        var spd = v.userData.speed || 0.04;
-        var dir = v.userData.dir   || 1;
-        v.position.z += spd * dir;
-        // fade out near ends
-        v.traverse(function(c){
-            if (c.isMesh && c.material) {
-                var t = Math.abs(v.position.z) / 40;
-                c.material.transparent = true;
-                c.material.opacity = Math.max(0, 1 - t*t);
-            }
-        });
-        if (Math.abs(v.position.z) > 42) {
-            mini3DScene.remove(v);
-            mini3DVehicles.splice(i,1);
+    // Lane markings — dashed whites between lanes
+    var dashMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.45, transparent: true });
+    var solidMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.7, transparent: true });
+    var centMat  = new THREE.MeshBasicMaterial({ color: 0xf59e0b, opacity: 0.8, transparent: true });
+
+    // Centre double-yellow
+    [-0.2, 0.2].forEach(function(ox) {
+        var cy = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 90), centMat);
+        cy.rotation.x = -Math.PI / 2;
+        cy.position.set(ox, 0.02, 0);
+        m3Scene.add(cy);
+    });
+    // Dashed lane lines
+    [-3.5, 3.5].forEach(function(lx) {
+        for (var dz = -42; dz < 43; dz += 7) {
+            var d = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 4), dashMat);
+            d.rotation.x = -Math.PI / 2;
+            d.position.set(lx, 0.02, dz);
+            m3Scene.add(d);
         }
+    });
+    // Outer solid white
+    [-6.8, 6.8].forEach(function(lx) {
+        var s = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 90), solidMat);
+        s.rotation.x = -Math.PI / 2;
+        s.position.set(lx, 0.02, 0);
+        m3Scene.add(s);
+    });
+}
+
+var m3VehicleIdx = 0;
+
+function _m3SpawnVehicle(ev) {
+    if (!m3Scene) return;
+
+    // Pick lane based on direction
+    var dir = ev.direction || 'S';
+    var nbWb = (dir === 'N' || dir === 'W');
+    var lanePool = nbWb ? [-5.5, -3.5, -1.5] : [1.5, 3.5, 5.5];
+    var laneX = lanePool[Math.floor(Math.random() * lanePool.length)];
+    var moveDir = nbWb ? -1 : 1;  // -1 = towards negative Z, +1 = towards positive Z
+
+    // Build mesh using vehicleBuildMesh from vehicleScene.js
+    var spec  = (typeof vehicleGetRandom === 'function') ? vehicleGetRandom(ev.vehicleType || null) : null;
+    var group = (spec && typeof vehicleBuildMesh === 'function')
+                    ? vehicleBuildMesh(spec)
+                    : _m3FallbackMesh(ev);
+
+    // Rotate to face travel direction
+    group.rotation.y = nbWb ? Math.PI : 0;
+
+    // Spawn at near end of road travelling through
+    var startZ = moveDir > 0 ? -44 : 44;
+    group.position.set(laneX, 0, startZ);
+    group.castShadow = true;
+
+    var speed = (ev.speedMph || 45) * 0.013;  // world units / frame at 60fps
+    var idx   = m3VehicleIdx++;
+
+    group.traverse(function(c) { if (c.isMesh) c.__vIdx = idx; });
+
+    m3Scene.add(group);
+    m3Vehicles.push({
+        idx:   idx,
+        group: group,
+        speed: speed,
+        moveDir: moveDir,
+        event: ev,
+        spec:  spec
+    });
+}
+
+function _m3FallbackMesh(ev) {
+    // Simple coloured box when vehicleScene.js not available
+    var colors = { sedan:0x3b82f6, suv:0x22c55e, truck:0xf59e0b, motorcycle:0xa855f7, van:0xec4899 };
+    var col = colors[ev.vehicleType] || 0x3b82f6;
+    var grp = new THREE.Group();
+    var body = new THREE.Mesh(
+        new THREE.BoxGeometry(1.8, 0.7, 4.0),
+        new THREE.MeshLambertMaterial({ color: col })
+    );
+    body.position.y = 0.35;
+    grp.add(body);
+    return grp;
+}
+
+function _m3Animate() {
+    m3AnimId = requestAnimationFrame(_m3Animate);
+
+    var toRemove = [];
+    m3Vehicles.forEach(function(v, i) {
+        v.group.position.z += v.speed * v.moveDir;
+        // Fade out in last 8 units of road
+        var distFromEnd = 44 - Math.abs(v.group.position.z);
+        if (distFromEnd < 8) {
+            var alpha = Math.max(0, distFromEnd / 8);
+            v.group.traverse(function(c) {
+                if (c.isMesh && c.material) {
+                    c.material.transparent = true;
+                    c.material.opacity = alpha;
+                }
+            });
+        }
+        if (Math.abs(v.group.position.z) > 46) toRemove.push(i);
+    });
+
+    // Remove exited vehicles (reverse so splice indices stay valid)
+    for (var ri = toRemove.length - 1; ri >= 0; ri--) {
+        var vi = toRemove[ri];
+        m3Scene.remove(m3Vehicles[vi].group);
+        m3Vehicles.splice(vi, 1);
     }
-    mini3DRenderer.render(mini3DScene, mini3DCamera);
+
+    m3Renderer.render(m3Scene, m3Camera);
 }
 
-function startMini3DPoll() {
-    if (mini3DPollTimer) return;
-    // Initial load: fetch the last 50 sim events as a snapshot
+function _m3LoadSnapshot() {
+    // Load last 30 saved sim events so the scene isn't empty on open
     var hw = document.getElementById('simHighway').value || '';
-    fetch('/api/events/scene?limit=50' + (hw?'&highwayId='+encodeURIComponent(hw):''))
-        .then(function(r){return r.json();})
-        .then(function(d){
+    fetch('/api/events/scene?limit=30' + (hw ? '&highwayId=' + encodeURIComponent(hw) : ''))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
             if (d.events && d.events.length) {
-                mini3DLastPoll = d.cursor || new Date().toISOString();
-                d.events.forEach(function(ev){ addMini3DEvent(ev); });
+                d.events.forEach(function(ev) { m3AddEvent(ev); });
             }
-        }).catch(function(){});
-    // Then delta-poll every 3s
-    mini3DPollTimer = setInterval(function(){
-        var hw2 = document.getElementById('simHighway').value || '';
-        var url = '/api/events/simulation?since='+encodeURIComponent(mini3DLastPoll)+(hw2?'&highwayId='+encodeURIComponent(hw2):'');
-        fetch(url)
-            .then(function(r){return r.json();})
-            .then(function(d){
-                if (!d.events||!d.events.length) return;
-                mini3DLastPoll = d.serverTime || mini3DLastPoll;
-                d.events.forEach(function(ev){ addMini3DEvent(ev); });
-            }).catch(function(){});
-    }, 3000);
+        })
+        .catch(function() {})
+        .finally(function() { _m3StartPoll(); });
 }
 
-function addMini3DEvent(ev) {
-    if (mini3DSeenIds.has(ev.id)) return;
-    mini3DSeenIds.add(ev.id);
-    spawnMiniVehicle(ev);
-    pushMini3DFeed(ev);
-    var cnt = document.getElementById('sim3dFeedCount');
-    if (cnt) cnt.textContent = mini3DSeenIds.size + ' vehicles';
+function _m3StartPoll() {
+    if (m3PollTimer) return;
+    m3PollTimer = setInterval(function() {
+        var hw = document.getElementById('simHighway').value || '';
+        var url = '/api/events/simulation?since=' + encodeURIComponent(m3LastPoll)
+                + (hw ? '&highwayId=' + encodeURIComponent(hw) : '');
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.events || !d.events.length) return;
+                m3LastPoll = d.serverTime || m3LastPoll;
+                d.events.forEach(function(ev) { m3AddEvent(ev); });
+            })
+            .catch(function() {});
+    }, 2000);
 }
+
+function m3AddEvent(ev) {
+    // Dedup by id (string or number)
+    var key = String(ev.id || ev.vehicleId + '_' + ev.createdDate);
+    if (m3SeenIds.has(key)) return;
+    m3SeenIds.add(key);
+
+    _m3SpawnVehicle(ev);
+    pushMini3DFeed(ev);
+
+    var cnt = document.getElementById('sim3dFeedCount');
+    if (cnt) cnt.textContent = m3SeenIds.size + ' vehicles';
+}
+
+// Alias used by doPost immediate-push path
+function addMini3DEvent(ev) { m3AddEvent(ev); }
 
 // ── Mini-3D feed list rendering ───────────────────────────────────────────
 var MINI_EVENT_COLORS = {detection:'#22c55e',merge:'#3b82f6',conflict:'#ef4444',speeding:'#f59e0b',fault:'#8b5cf6',ambient:'#64748b'};
