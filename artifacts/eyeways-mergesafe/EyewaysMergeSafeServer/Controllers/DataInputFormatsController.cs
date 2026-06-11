@@ -128,7 +128,25 @@ public class DataInputFormatsController : Controller
 
         await _db.SaveChangesAsync();
 
-        return Json(new { ok = true, label, payload = shortPayload, vehicleId = simVehicleId, vehicleType, direction = cardinal, zoneId = resolvedZone, highwayId = resolvedHighway });
+        // Fetch the freshly-created event's ID so JS can dedup in the mini-3D feed
+        var savedEvent = await _db.VehicleEvents.AsNoTracking()
+            .Where(e => e.VehicleId == simVehicleId)
+            .OrderByDescending(e => e.CreatedDate)
+            .FirstOrDefaultAsync();
+
+        return Json(new {
+            ok        = true,
+            label,
+            payload   = shortPayload,
+            vehicleId = simVehicleId,
+            eventId   = savedEvent?.Id,
+            vehicleType,
+            eventType = eventType,
+            speedMph  = GetDbl(doc, "speed_mph"),
+            direction = cardinal,
+            zoneId    = resolvedZone,
+            highwayId = resolvedHighway
+        });
     }
 
     // ── Generate payload preview (no DB write) ──────────────────────────────

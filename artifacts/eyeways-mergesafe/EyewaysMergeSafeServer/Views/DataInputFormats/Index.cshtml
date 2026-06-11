@@ -121,9 +121,10 @@
                         </button>
                     </div>
                     <div class="d-flex gap-2 mb-3">
-                        <a href="#" id="btnView3D" class="btn btn-outline-info btn-sm flex-fill" title="Open 3D scene with simulation data" onclick="openSimScene(); return false;">
-                            <i class="bi bi-badge-3d me-1"></i>View as 3D Scene
-                        </a>
+                        <button id="btnToggle3DPanel" class="btn btn-outline-info btn-sm flex-fill"
+                                onclick="toggle3DPanel()" title="Show embedded 3D scene with sim data">
+                            <i class="bi bi-badge-3d me-1"></i>3D Scene <i id="icon3DPanel" class="bi bi-chevron-down ms-1"></i>
+                        </button>
                         <button class="btn btn-outline-secondary btn-sm flex-fill" onclick="clearSimLog()">
                             <i class="bi bi-trash me-1"></i>Clear Log
                         </button>
@@ -150,6 +151,104 @@
                 </div>
                 <div id="simLog" style="max-height:500px;overflow-y:auto">
                     <p class="text-muted small p-3">Start simulation to see live payloads posted here…</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Embedded 3D Scene Panel (expandable) ──────────────────────────── -->
+    <div id="simScene3DPanel" style="display:none;margin-top:1rem">
+        <div class="mss-card">
+            <div class="mss-card-header d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-badge-3d me-1"></i>
+                    <span>3D Traffic Visualization</span>
+                    <span class="badge" style="background:#f59e0b;color:#000;font-size:.6rem;font-weight:700">
+                        <i class="bi bi-cpu me-1"></i>SIM ONLY
+                    </span>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="sim3dFeedCount" class="badge bg-secondary" style="font-size:.6rem">0 vehicles</span>
+                    <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.7rem"
+                            onclick="toggle3DPanel()" title="Collapse">
+                        <i class="bi bi-chevron-up"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="row g-0" style="height:420px">
+                <!-- Left: mini 3D canvas -->
+                <div class="col-lg-8 position-relative" style="height:420px">
+                    <div id="simMini3DContainer" style="width:100%;height:100%;border-radius:0 0 0 12px;overflow:hidden;background:#060d1a;position:relative">
+                        <canvas id="simMiniCanvas" style="width:100%;height:100%;display:block"></canvas>
+                        <!-- loading overlay -->
+                        <div id="simMini3DLoader" style="position:absolute;inset:0;display:flex;flex-direction:column;
+                             align-items:center;justify-content:center;background:rgba(6,13,26,.92);z-index:5">
+                            <div class="spinner-border text-info mb-2" style="width:1.5rem;height:1.5rem"></div>
+                            <span class="text-muted small">Initialising 3D scene…</span>
+                        </div>
+                    </div>
+                    <!-- click-to-inspect overlay hint -->
+                    <div style="position:absolute;bottom:8px;left:8px;z-index:4;pointer-events:none;
+                                font-size:.6rem;color:rgba(255,255,255,.35)">
+                        <i class="bi bi-cursor me-1"></i>Click a vehicle to inspect
+                    </div>
+                </div>
+                <!-- Right: feed list -->
+                <div class="col-lg-4 d-flex flex-column" style="height:420px;border-left:1px solid rgba(255,255,255,.07)">
+                    <div class="px-3 pt-2 pb-1 d-flex justify-content-between align-items-center"
+                         style="border-bottom:1px solid rgba(255,255,255,.07)">
+                        <span class="small fw-semibold" style="color:#f59e0b">
+                            <i class="bi bi-activity me-1"></i>Sim Feed
+                        </span>
+                        <span class="text-muted" style="font-size:.6rem">click row for details</span>
+                    </div>
+                    <div id="simMini3DFeed"
+                         style="flex:1;overflow-y:auto;font-size:.72rem">
+                        <p class="text-muted small p-2" id="simMini3DFeedEmpty">
+                            Start the simulation to see events here…
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Feed Event Detail Modal ──────────────────────────────────────── -->
+    <div class="modal fade" id="simFeedDetailModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="background:#0f1624;border:1px solid rgba(255,255,255,.12);border-radius:12px">
+                <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,.09)">
+                    <div>
+                        <h5 class="modal-title mb-0" id="simFeedModalTitle">Event Details</h5>
+                        <p class="text-muted mb-0" style="font-size:.7rem" id="simFeedModalSub">—</p>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-0">
+                    <!-- Tab strip -->
+                    <div class="d-flex" style="border-bottom:1px solid rgba(255,255,255,.09)">
+                        <button id="sfmTabFmt" onclick="sfmSwitch('fmt')"
+                                class="btn btn-link btn-sm px-4 py-2"
+                                style="color:#60a5fa;font-size:.75rem;border-radius:0;border-bottom:2px solid #3b82f6">
+                            <i class="bi bi-list-ul me-1"></i>Formatted
+                        </button>
+                        <button id="sfmTabRaw" onclick="sfmSwitch('raw')"
+                                class="btn btn-link btn-sm px-4 py-2"
+                                style="color:#64748b;font-size:.75rem;border-radius:0;border-bottom:2px solid transparent">
+                            <i class="bi bi-braces me-1"></i>Raw JSON
+                        </button>
+                    </div>
+                    <div id="sfmBodyFmt" style="padding:12px 16px;max-height:340px;overflow-y:auto"></div>
+                    <div id="sfmBodyRaw" style="display:none;padding:12px 16px;max-height:340px;overflow-y:auto">
+                        <pre id="sfmRawPre" style="font-size:.68rem;color:#94a3b8;margin:0;white-space:pre-wrap"></pre>
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,.09)">
+                    <button class="btn btn-outline-secondary btn-sm" id="sfmCopyBtn"
+                            onclick="sfmCopy()">
+                        <i class="bi bi-clipboard me-1"></i>Copy JSON
+                    </button>
+                    <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -324,6 +423,10 @@ else
 
 @if (isSimTab)
 {
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"
+        integrity="sha384-9EQoUIJYrv09/oYhSxnw1VpLcfPw3BM9dE7+D/3wGUPeLLa7F9Z6OAoD+i/M6FK9"
+        crossorigin="anonymous"></script>
+<script src="~/js/vehicleScene.js"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════════
 // DataInputFormats — Simulation tab JS
@@ -414,6 +517,17 @@ function startSim() {
                 document.getElementById('simTotalBadge').textContent = simTotal + ' posted';
                 setSimStatus('running', 'Running · ' + simTotal + ' posted · every ' + interval/1000 + 's');
                 appendSimLog(d.payload, d.label, srcType, d);
+                // Push directly into mini-3D feed without waiting for poll
+                if (mini3DInitialized && d.eventId) {
+                    var evObj = {
+                        id: d.eventId, vehicleId: d.vehicleId, vehicleType: d.vehicleType,
+                        direction: d.direction, speedMph: d.speedMph||null,
+                        eventType: d.eventType||'detection', zoneId: d.zoneId||'',
+                        highwayId: hwId, sourceType: srcType, isSimulated: true,
+                        createdDate: new Date().toISOString()
+                    };
+                    addMini3DEvent(evObj);
+                }
                 // Re-broadcast so the 3D tab's delta-poll knows to keep polling
                 simBroadcast('sim_started');
             }
@@ -459,19 +573,30 @@ function appendSimLog(payloadStr, label, srcType, resp) {
     var safeForAttr = payloadStr.replace(/"/g,'&quot;');
     var dirLabel = dir==='N'?'↑N':dir==='S'?'↓S':dir==='E'?'→E':dir==='W'?'←W':dir||'';
 
+    // Store event for modal
+    var evIdx = simLogEventCounter++;
+    var evData = null;
+    try { evData = Object.assign({}, resp, { payloadStr: payloadStr }); } catch(e) {}
+    if (evData) simLogEventMap[evIdx] = evData;
+
     var item = document.createElement('div');
     item.className = 'mss-list-item';
-    item.style.cssText = 'border-left:3px solid ' + clr + ';padding-left:10px';
+    item.style.cssText = 'border-left:3px solid ' + clr + ';padding-left:10px;cursor:pointer';
+    item.title = 'Click to view event details';
+    if (evData) {
+        item.onclick = (function(idx){ return function(){ openSimLogModal(idx); }; })(evIdx);
+    }
     item.innerHTML =
         '<div class="d-flex justify-content-between align-items-center mb-1">' +
           '<span class="small fw-semibold" style="color:' + clr + '">' + icon + ' ' + (label || srcType.toUpperCase()) +
             (vt   ? ' <span class="badge" style="background:rgba(255,255,255,.1);color:#e2e8f0;font-size:.58rem">' + vt + '</span>'    : '') +
             (dirLabel ? ' <span class="badge bg-secondary" style="font-size:.58rem">' + dirLabel + '</span>' : '') +
+            '<span class="badge ms-1" style="background:rgba(255,255,255,.07);color:#64748b;font-size:.55rem"><i class="bi bi-search me-1"></i>details</span>' +
           '</span>' +
           '<div class="d-flex gap-1 align-items-center">' +
             '<span class="font-monospace text-muted" style="font-size:.6rem">' + now + '</span>' +
             '<button class="btn btn-outline-secondary btn-sm p-0 px-1" style="font-size:.65rem" ' +
-              'title="Copy payload" onclick="navigator.clipboard.writeText(this.dataset.p)"' +
+              'title="Copy payload" onclick="event.stopPropagation();navigator.clipboard.writeText(this.dataset.p)"' +
               ' data-p="' + safeForAttr + '"><i class="bi bi-clipboard"></i></button>' +
           '</div>' +
         '</div>' +
@@ -487,19 +612,371 @@ function appendSimLog(payloadStr, label, srcType, resp) {
     if (simLogItems.length > 50) {
         var old = simLogItems.shift();
         if (old.parentNode) old.parentNode.removeChild(old);
+        // Clean up oldest map entry
+        delete simLogEventMap[evIdx - 50];
     }
 }
 
+// ── Embedded 3D panel toggle ─────────────────────────────────────────────
+var mini3DInitialized = false;
+var mini3DPanel3DOpen = false;
+
+function toggle3DPanel() {
+    var panel = document.getElementById('simScene3DPanel');
+    var icon  = document.getElementById('icon3DPanel');
+    mini3DPanel3DOpen = !mini3DPanel3DOpen;
+    panel.style.display = mini3DPanel3DOpen ? '' : 'none';
+    if (icon) {
+        icon.className = mini3DPanel3DOpen ? 'bi bi-chevron-up ms-1' : 'bi bi-chevron-down ms-1';
+    }
+    if (mini3DPanel3DOpen && !mini3DInitialized) {
+        initMini3D();
+    }
+    if (mini3DPanel3DOpen) {
+        // scroll into view smoothly
+        setTimeout(function(){
+            document.getElementById('simScene3DPanel').scrollIntoView({behavior:'smooth',block:'nearest'});
+        }, 60);
+    }
+}
+
+// ── Mini Three.js scene variables ─────────────────────────────────────────
+var mini3DScene, mini3DCamera, mini3DRenderer, mini3DAnimId;
+var mini3DVehicles = [];
+var mini3DSeenIds  = new Set();
+var mini3DFeedItems = [];
+var mini3DPollTimer = null;
+var mini3DLastPoll  = new Date().toISOString();
+var mini3DSpeedMult = 1;
+
+function initMini3D() {
+    if (mini3DInitialized) return;
+    mini3DInitialized = true;
+
+    var canvas    = document.getElementById('simMiniCanvas');
+    var container = document.getElementById('simMini3DContainer');
+    var W = container.clientWidth, H = container.clientHeight;
+
+    mini3DScene    = new THREE.Scene();
+    mini3DScene.background = new THREE.Color(0x060d1a);
+    mini3DScene.fog = new THREE.Fog(0x060d1a, 40, 90);
+
+    mini3DCamera = new THREE.PerspectiveCamera(50, W/H, 0.1, 200);
+    mini3DCamera.position.set(0, 18, 22);
+    mini3DCamera.lookAt(0, 0, 0);
+
+    mini3DRenderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true});
+    mini3DRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+    mini3DRenderer.setSize(W, H);
+    mini3DRenderer.shadowMap.enabled = true;
+
+    // Lights
+    mini3DScene.add(new THREE.AmbientLight(0x8fa8c8, 0.6));
+    var sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(20, 40, 20);
+    mini3DScene.add(sun);
+
+    // Road surface
+    var road = new THREE.Mesh(
+        new THREE.PlaneGeometry(16, 80),
+        new THREE.MeshLambertMaterial({color:0x1e293b})
+    );
+    road.rotation.x = -Math.PI/2;
+    mini3DScene.add(road);
+
+    // Lane markings
+    for (var zi = -36; zi < 37; zi += 6) {
+        [-5,-3,3,5].forEach(function(xl){
+            var lm = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.12,3),
+                new THREE.MeshBasicMaterial({color:Math.abs(xl)===5?0xffffff:0xffff00})
+            );
+            lm.rotation.x = -Math.PI/2;
+            lm.position.set(xl,0.03,zi);
+            mini3DScene.add(lm);
+        });
+    }
+    [-7.2,7.2].forEach(function(cx){
+        var curb = new THREE.Mesh(
+            new THREE.BoxGeometry(0.25,0.12,80),
+            new THREE.MeshLambertMaterial({color:0x2c3a52})
+        );
+        curb.position.set(cx,0.06,0);
+        mini3DScene.add(curb);
+    });
+
+    // Handle resize
+    window.addEventListener('resize', function(){
+        var nw = container.clientWidth, nh = container.clientHeight;
+        mini3DCamera.aspect = nw/nh;
+        mini3DCamera.updateProjectionMatrix();
+        mini3DRenderer.setSize(nw,nh);
+    });
+
+    // Click-to-inspect
+    canvas.addEventListener('click', function(e){
+        var rect = canvas.getBoundingClientRect();
+        var mx = ((e.clientX-rect.left)/rect.width)*2-1;
+        var my = -((e.clientY-rect.top)/rect.height)*2+1;
+        var rc = new THREE.Raycaster();
+        rc.setFromCamera({x:mx,y:my}, mini3DCamera);
+        var meshes = [];
+        mini3DVehicles.forEach(function(v){v.traverse(function(c){if(c.isMesh)meshes.push(c);});});
+        var hits = rc.intersectObjects(meshes);
+        if (hits.length) {
+            var grp = hits[0].object;
+            while (grp.parent && grp.parent !== mini3DScene) grp = grp.parent;
+            if (grp.userData && grp.userData.event) openFeedModal(grp.userData.event, grp);
+        }
+    });
+
+    // Hide loader
+    document.getElementById('simMini3DLoader').style.display = 'none';
+
+    animateMini3D();
+    startMini3DPoll();
+}
+
+function spawnMiniVehicle(ev) {
+    var spec = typeof vehicleGetRandom === 'function' ? vehicleGetRandom(ev.vehicleType||null) : null;
+    if (!spec) {
+        // Fallback simple box
+        var grp = new THREE.Group();
+        var body = new THREE.Mesh(
+            new THREE.BoxGeometry(1.8,0.7,4.2),
+            new THREE.MeshLambertMaterial({color:0x3b82f6})
+        );
+        body.position.y = 0.35;
+        grp.add(body);
+        spec = null;
+        // manual spawn
+        var laneX = (ev.direction === 'N' || ev.direction === 'W') ? -2.5 : 2.5;
+        grp.position.set(laneX, 0, (Math.random()-0.5)*60);
+        grp.userData = {
+            speed: (ev.speedMph||40)*0.012, laneX: laneX,
+            dir: (ev.direction === 'N' || ev.direction === 'W') ? -1 : 1,
+            event: ev, vehicleType: ev.vehicleType||'sedan',
+            make:'', model:'', icon:'🚗', cardinal: ev.direction||'N',
+            isSimulation: true, zoneId: ev.zoneId||''
+        };
+        mini3DScene.add(grp);
+        mini3DVehicles.push(grp);
+        return grp;
+    }
+    // Use vehicleScene.js helpers if available
+    if (typeof buildVehicleGroup === 'function') {
+        var lanes = [-5.5,-3.5,3.5,5.5];
+        var laneX = lanes[Math.floor(Math.random()*lanes.length)];
+        var dir   = laneX < 0 ? -1 : 1;
+        var grp2  = buildVehicleGroup(spec);
+        grp2.position.set(laneX, 0, (Math.random()-0.5)*60);
+        grp2.userData.speed = (ev.speedMph||40)*0.012;
+        grp2.userData.dir   = dir;
+        grp2.userData.laneX = laneX;
+        grp2.userData.event = ev;
+        grp2.userData.isSimulation = true;
+        grp2.userData.cardinal = ev.direction||'N';
+        grp2.userData.zoneId   = ev.zoneId||'';
+        mini3DScene.add(grp2);
+        mini3DVehicles.push(grp2);
+        return grp2;
+    }
+    return null;
+}
+
+function animateMini3D() {
+    mini3DAnimId = requestAnimationFrame(animateMini3D);
+    // Move vehicles
+    for (var i = mini3DVehicles.length-1; i >= 0; i--) {
+        var v = mini3DVehicles[i];
+        var spd = v.userData.speed || 0.04;
+        var dir = v.userData.dir   || 1;
+        v.position.z += spd * dir;
+        // fade out near ends
+        v.traverse(function(c){
+            if (c.isMesh && c.material) {
+                var t = Math.abs(v.position.z) / 40;
+                c.material.transparent = true;
+                c.material.opacity = Math.max(0, 1 - t*t);
+            }
+        });
+        if (Math.abs(v.position.z) > 42) {
+            mini3DScene.remove(v);
+            mini3DVehicles.splice(i,1);
+        }
+    }
+    mini3DRenderer.render(mini3DScene, mini3DCamera);
+}
+
+function startMini3DPoll() {
+    if (mini3DPollTimer) return;
+    // Initial load: fetch the last 50 sim events as a snapshot
+    var hw = document.getElementById('simHighway').value || '';
+    fetch('/api/events/scene?limit=50' + (hw?'&highwayId='+encodeURIComponent(hw):''))
+        .then(function(r){return r.json();})
+        .then(function(d){
+            if (d.events && d.events.length) {
+                mini3DLastPoll = d.cursor || new Date().toISOString();
+                d.events.forEach(function(ev){ addMini3DEvent(ev); });
+            }
+        }).catch(function(){});
+    // Then delta-poll every 3s
+    mini3DPollTimer = setInterval(function(){
+        var hw2 = document.getElementById('simHighway').value || '';
+        var url = '/api/events/simulation?since='+encodeURIComponent(mini3DLastPoll)+(hw2?'&highwayId='+encodeURIComponent(hw2):'');
+        fetch(url)
+            .then(function(r){return r.json();})
+            .then(function(d){
+                if (!d.events||!d.events.length) return;
+                mini3DLastPoll = d.serverTime || mini3DLastPoll;
+                d.events.forEach(function(ev){ addMini3DEvent(ev); });
+            }).catch(function(){});
+    }, 3000);
+}
+
+function addMini3DEvent(ev) {
+    if (mini3DSeenIds.has(ev.id)) return;
+    mini3DSeenIds.add(ev.id);
+    spawnMiniVehicle(ev);
+    pushMini3DFeed(ev);
+    var cnt = document.getElementById('sim3dFeedCount');
+    if (cnt) cnt.textContent = mini3DSeenIds.size + ' vehicles';
+}
+
+// ── Mini-3D feed list rendering ───────────────────────────────────────────
+var MINI_EVENT_COLORS = {detection:'#22c55e',merge:'#3b82f6',conflict:'#ef4444',speeding:'#f59e0b',fault:'#8b5cf6',ambient:'#64748b'};
+
+function pushMini3DFeed(ev) {
+    mini3DFeedItems.unshift(ev);
+    if (mini3DFeedItems.length > 40) mini3DFeedItems.length = 40;
+    renderMini3DFeed();
+}
+
+function renderMini3DFeed() {
+    var feed = document.getElementById('simMini3DFeed');
+    if (!feed) return;
+    var empty = document.getElementById('simMini3DFeedEmpty');
+    if (empty) empty.style.display = 'none';
+    var vtIcons2 = {sedan:'🚗',suv:'🚙',truck:'🚛',motorcycle:'🏍️',van:'🚐'};
+    feed.innerHTML = mini3DFeedItems.map(function(ev, idx){
+        var ec  = MINI_EVENT_COLORS[ev.eventType]||'#64748b';
+        var ico = vtIcons2[ev.vehicleType]||'🚗';
+        var dir = ev.direction||'';
+        var dl  = dir==='N'?'↑N':dir==='S'?'↓S':dir==='E'?'→E':dir==='W'?'←W':dir||'';
+        var t   = ev.createdDate ? new Date(ev.createdDate).toLocaleTimeString() : '';
+        return '<div class="mss-list-item" style="cursor:pointer;padding:.32rem .6rem;border-left:2px solid '+ec+'" '+
+               'onclick="openFeedModalById('+idx+')" title="Click for details">'+
+               '<div class="d-flex justify-content-between align-items-center">'+
+               '<span>'+ico+' <span class="fw-semibold" style="font-size:.72rem">'+ev.vehicleId+'</span>'+
+               (dl?'<span class="badge bg-secondary ms-1" style="font-size:.55rem">'+dl+'</span>':'')+
+               '</span>'+
+               '<span class="font-monospace text-muted" style="font-size:.58rem">'+t+'</span></div>'+
+               '<div class="d-flex gap-2 mt-1" style="font-size:.62rem">'+
+               '<span style="color:'+ec+'">●&nbsp;'+ev.eventType+'</span>'+
+               (ev.vehicleType?'<span class="text-muted">'+ev.vehicleType+'</span>':'')+
+               (ev.speedMph?'<span class="text-muted">'+Math.round(ev.speedMph)+' mph</span>':'')+
+               (ev.zoneId?'<span class="text-muted ms-auto">'+ev.zoneId+'</span>':'')+
+               '</div></div>';
+    }).join('');
+}
+
+function openFeedModalById(idx) {
+    var ev = mini3DFeedItems[idx];
+    if (!ev) return;
+    openFeedModal(ev, null);
+}
+
+// ── Feed detail modal ─────────────────────────────────────────────────────
+var sfmCurrentRaw = null;
+
+function openFeedModal(ev, grpOrNull) {
+    if (!ev) return;
+    sfmCurrentRaw = ev;
+    var vtIcons3 = {sedan:'🚗',suv:'🚙',truck:'🚛',motorcycle:'🏍️',van:'🚐'};
+    var ico = vtIcons3[ev.vehicleType]||'🚗';
+    document.getElementById('simFeedModalTitle').innerHTML =
+        ico + ' ' + (ev.vehicleId||'Unknown Vehicle') +
+        '<span style="background:#f59e0b;color:#000;padding:1px 6px;border-radius:3px;font-size:.6rem;font-weight:700;margin-left:6px">SIM</span>';
+    document.getElementById('simFeedModalSub').textContent =
+        (ev.eventType||'detection') + (ev.createdDate?' · '+new Date(ev.createdDate).toLocaleString():'');
+
+    var dir = ev.direction||'';
+    var dl  = dir==='N'?'↑ Northbound':dir==='S'?'↓ Southbound':dir==='E'?'→ Eastbound':dir==='W'?'← Westbound':dir||'—';
+    var rows = [
+        ['Vehicle ID',    ev.vehicleId||'—'],
+        ['Vehicle Type',  ev.vehicleType||'—'],
+        ['Make / Model',  (ev.make||'')+(ev.model?' '+ev.model:'') || '—'],
+        ['Direction',     dl],
+        ['Speed',         ev.speedMph ? Math.round(ev.speedMph)+' mph' : '—'],
+        ['Event Type',    ev.eventType||'—'],
+        ['Zone',          ev.zoneId||'—'],
+        ['Highway',       ev.highwayId||'—'],
+        ['Source Type',   ev.sourceType||'—'],
+        ['Is Simulated',  ev.isSimulated===true||ev.isSimulation===true ? '✅ Yes' : '❌ No'],
+        ['GPS',           (ev.latitude&&ev.longitude) ? ev.latitude+', '+ev.longitude : '—'],
+        ['Signal Str.',   ev.signalStrength!=null ? ev.signalStrength+' dBm' : '—'],
+        ['Altitude',      ev.altitudeFt!=null ? ev.altitudeFt+' ft' : '—'],
+        ['Heading',       ev.heading!=null ? ev.heading+'°' : '—'],
+        ['Recorded At',   ev.createdDate ? new Date(ev.createdDate).toLocaleString() : '—'],
+    ];
+
+    var ec = MINI_EVENT_COLORS[ev.eventType]||'#64748b';
+    document.getElementById('sfmBodyFmt').innerHTML = rows.map(function(r){
+        return '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05)">'+
+               '<span style="color:#64748b;font-size:.73rem">'+r[0]+'</span>'+
+               '<span style="color:#e2e8f0;font-size:.73rem;font-weight:600;text-align:right;max-width:220px;'+
+               'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r[1]+'</span></div>';
+    }).join('') +
+    '<div style="margin-top:10px;padding:6px 10px;border-radius:6px;background:rgba(255,255,255,.04);display:flex;gap:8px;align-items:center">'+
+    '<span style="color:'+ec+';font-size:1rem">●</span>'+
+    '<span style="color:#e2e8f0;font-size:.8rem;font-weight:600">'+ev.eventType+'</span>'+
+    (ev.speedMph?'<span class="text-muted ms-auto" style="font-size:.72rem">'+Math.round(ev.speedMph)+' mph</span>':'')+
+    '</div>';
+
+    document.getElementById('sfmRawPre').textContent = JSON.stringify(ev, null, 2);
+    sfmSwitch('fmt');
+
+    var modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('simFeedDetailModal'));
+    modal.show();
+}
+
+function sfmSwitch(tab) {
+    document.getElementById('sfmBodyFmt').style.display = tab==='fmt' ? '' : 'none';
+    document.getElementById('sfmBodyRaw').style.display = tab==='raw' ? '' : 'none';
+    document.getElementById('sfmTabFmt').style.color      = tab==='fmt' ? '#60a5fa' : '#64748b';
+    document.getElementById('sfmTabFmt').style.borderBottom = tab==='fmt' ? '2px solid #3b82f6' : '2px solid transparent';
+    document.getElementById('sfmTabRaw').style.color      = tab==='raw' ? '#60a5fa' : '#64748b';
+    document.getElementById('sfmTabRaw').style.borderBottom = tab==='raw' ? '2px solid #3b82f6' : '2px solid transparent';
+}
+
+function sfmCopy() {
+    if (!sfmCurrentRaw) return;
+    navigator.clipboard.writeText(JSON.stringify(sfmCurrentRaw, null, 2)).then(function(){
+        var btn = document.getElementById('sfmCopyBtn');
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Copied!';
+        setTimeout(function(){ btn.innerHTML = '<i class="bi bi-clipboard me-1"></i>Copy JSON'; }, 1500);
+    });
+}
+
+// ── Make sim log rows clickable to open modal ─────────────────────────────
+// Patch appendSimLog to store event data and wire click handler
+var simLogEventMap = {};  // maps item index to event data
+var simLogEventCounter = 0;
+
+function openSimLogModal(idx) {
+    var ev = simLogEventMap[idx];
+    if (!ev) return;
+    openFeedModal(ev, null);
+}
+
+// ── Keep openSimScene for keyboard shortcut / alt path ────────────────────
 function openSimScene() {
     var hwId = document.getElementById('simHighway').value || '';
     var isRunning = !!simTimer;
-    // Persist state for the new tab to read on load
     try { localStorage.setItem('eyeways_sim_active',  isRunning ? 'true' : 'false'); } catch(e) {}
     try { localStorage.setItem('eyeways_sim_highway', hwId); } catch(e) {}
-    // Broadcast so any ALREADY-OPEN 3D tab enters sim mode immediately
     if (isRunning) simBroadcast('sim_started');
     var url = '/Traffic3D?from=sim' + (hwId ? '&highwayId=' + encodeURIComponent(hwId) : '');
-    // Open in a NEW TAB — simulation timer keeps running in THIS tab
     window.open(url, '_blank');
 }
 
