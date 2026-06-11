@@ -1,2 +1,15 @@
+# ── Build outputs ──────────────────────────────────────────────────────────
 bin/
 obj/
+
+# ── Local SQLite DB (generated at runtime) ────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ── User-specific settings ────────────────────────────────────────────────
+*.user
+launchSettings.override.json
+
+# ── Publish outputs ───────────────────────────────────────────────────────
+publish/

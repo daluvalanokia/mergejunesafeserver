@@ -340,9 +340,9 @@ var simTotal    = 0;
 var simLogItems = [];
 var eyewaysBroadcast = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('eyeways_sim') : null;
 
-function simBroadcast(type) {
+function simBroadcast(type, explicit) {
     var hwId = document.getElementById('simHighway').value || '';
-    if (eyewaysBroadcast) eyewaysBroadcast.postMessage({ type: type, highwayId: hwId });
+    if (eyewaysBroadcast) eyewaysBroadcast.postMessage({ type: type, highwayId: hwId, explicit: explicit === true });
     try {
         localStorage.setItem('eyeways_sim_active',  type === 'sim_started' ? 'true' : 'false');
         localStorage.setItem('eyeways_sim_highway', hwId);
@@ -436,7 +436,7 @@ function stopSim() {
     document.getElementById('btnStartSim').style.display = '';
     document.getElementById('btnStopSim').style.display  = 'none';
     setSimStatus('stopped', 'Stopped · ' + simTotal + ' total posted');
-    simBroadcast('sim_stopped');
+    simBroadcast('sim_stopped', true);  // explicit=true → 3D tab may exit sim mode
 }
 
 function setSimStatus(state, msg) {
@@ -492,11 +492,14 @@ function appendSimLog(payloadStr, label, srcType, resp) {
 
 function openSimScene() {
     var hwId = document.getElementById('simHighway').value || '';
-    // Persist state for the new tab
-    try { localStorage.setItem('eyeways_sim_active',  simTimer ? 'true' : 'false'); } catch(e) {}
+    var isRunning = !!simTimer;
+    // Persist state for the new tab to read on load
+    try { localStorage.setItem('eyeways_sim_active',  isRunning ? 'true' : 'false'); } catch(e) {}
     try { localStorage.setItem('eyeways_sim_highway', hwId); } catch(e) {}
+    // Broadcast so any ALREADY-OPEN 3D tab enters sim mode immediately
+    if (isRunning) simBroadcast('sim_started');
     var url = '/Traffic3D?from=sim' + (hwId ? '&highwayId=' + encodeURIComponent(hwId) : '');
-    // Open in a NEW TAB so the simulation timer keeps running in THIS tab
+    // Open in a NEW TAB — simulation timer keeps running in THIS tab
     window.open(url, '_blank');
 }
 
@@ -506,8 +509,6 @@ function clearSimLog() {
     simTotal = 0;
     document.getElementById('simTotalBadge').textContent = '0 posted';
     if (simTimer) setSimStatus('running', 'Running (log cleared)');
-}
-</script>
 }
 </script>
 }

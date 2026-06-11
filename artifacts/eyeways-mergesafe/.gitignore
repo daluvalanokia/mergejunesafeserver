@@ -1,0 +1,57 @@
+# ── Visual Studio IDE artifacts ────────────────────────────────────────────
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# ── GitHub Copilot workspace instructions (local IDE auto-gen) ────────────
+.github/copilot-instructions.md
+
+# ── Build outputs ──────────────────────────────────────────────────────────
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+
+# ── Publish output ─────────────────────────────────────────────────────────
+publish/
+PublishProfiles/
+
+# ── .NET runtime / NuGet ───────────────────────────────────────────────────
+*.nupkg
+*.snupkg
+**/packages/
+project.lock.json
+project.fragment.lock.json
+global.json
+nuget.config
+
+# ── ASP.NET ────────────────────────────────────────────────────────────────
+AppPackages/
+BundleArtifacts/
+Package.StoreAssociation.xml
+_pkginfo.txt
+*.appx
+*.appxbundle
+*.appxsym
+
+# ── Test results ───────────────────────────────────────────────────────────
+TestResults/
+[Tt]est[Rr]esult*/
+*.trx
+*.coveragexml
+
+# ── SQLite local database ──────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ── Rider ─────────────────────────────────────────────────────────────────
+.idea/
+*.sln.iml
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+.DS_Store

@@ -371,13 +371,22 @@ function setMode(m) {
         if (!scene3dInitialized) {
             initScene3D();
         } else {
-            // Already running — reset feed for the current zone/mode
-            seenEventIds.clear();
-            feedItems3d = [];
-            var feedEl = document.getElementById('trafficFeed');
-            if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2">Refreshing…</p>';
-            lastPollTime = new Date(Date.now() - 30000).toISOString();
-            if (!animationPaused) pollLiveEvents();
+            // Already running — restore the correct mode; do NOT disturb sim state
+            updateSceneZoneLabel(selectedZoneId);
+            if (animationPaused) {
+                // Returning to 3D while in sim mode — re-assert sim UI, keep polling
+                setSimUI(true);
+                if (!simEventInterval) startSimPolling();
+            } else {
+                // Returning to 3D in live mode — refresh feed
+                seenEventIds.clear();
+                feedItems3d = [];
+                var feedEl = document.getElementById('trafficFeed');
+                if (feedEl) feedEl.innerHTML = '<p class="text-muted small p-2">Refreshing…</p>';
+                lastPollTime = new Date(Date.now() - 30000).toISOString();
+                if (!liveEventInterval) startLivePolling();
+                pollLiveEvents();
+            }
         }
         updateSceneZoneLabel(selectedZoneId);
     }
@@ -841,28 +850,33 @@ function getSimActive(){
     try{return localStorage.getItem('eyeways_sim_active')==='true';}catch(e){return false;}
 }
 (function(){
-    function onSimStateChange(started){
+    function onSimStateChange(started,e){
         if(started){
             // Sim started in the other tab
             if(!scene3dInitialized){setMode('3d');setTimeout(enterSimMode,800);}
             else if(!animationPaused){enterSimMode();}
             // If already in sim mode: just let the running delta-poll pick up new events (do nothing)
         }else{
-            // Sim stopped — exit sim mode and return to live feed
-            if(animationPaused) exitSimMode();
-            // Clear the sim-active flag
-            try{localStorage.removeItem('eyeways_sim_active');}catch(e){}
+            // Sim stopped broadcast — only auto-exit if it was an explicit user stop
+            // (not just a page-unload / tab close on the sim side)
+            if(animationPaused && e && e.data && e.data.explicit===true) exitSimMode();
+            if(!e || !e.data || e.data.explicit===true){
+                try{localStorage.removeItem('eyeways_sim_active');}catch(e2){}
+            }
         }
     }
     if(typeof BroadcastChannel!=='undefined'){
         var bc=new BroadcastChannel('eyeways_sim');
         bc.onmessage=function(e){
             if(!e.data||!e.data.type)return;
-            onSimStateChange(e.data.type==='sim_started');
+            onSimStateChange(e.data.type==='sim_started', e);
         };
     }
     window.addEventListener('storage',function(e){
-        if(e.key==='eyeways_sim_active') onSimStateChange(e.newValue==='true');
+        // localStorage storage events fire when the key is removed (null) — treat that
+        // as non-explicit so we don't auto-exit sim mode just because the other tab navigated
+        if(e.key==='eyeways_sim_active' && e.newValue==='true') onSimStateChange(true,null);
+        // Do not auto-exit on storage removal — only the explicit broadcast does that
     });
 })();
 
