@@ -47,3 +47,23 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# ── Visual Studio IDE (any solution name under .vs/) ──────────────────────
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ── .NET build outputs at repo root ───────────────────────────────────────
+[Bb]in/
+[Oo]bj/
+
+# ── SQLite runtime databases ──────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ── Rider ─────────────────────────────────────────────────────────────────
+.idea/
+*.sln.iml
